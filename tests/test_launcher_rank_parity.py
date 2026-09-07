@@ -695,6 +695,34 @@ def part_d(h: Harness) -> None:
         check(any(wdest in i for i in issues), f"D4 a worker scp fed from a different host file is reported ({issues[:1]})")
 
 
+def part_e(h: Harness) -> None:
+    print("Part E: service overrides survive E3 selection and E2 rollback on both ranks")
+    for grouped, rows in (("1", "32"), ("0", "128")):
+        overrides = {
+            "EXL3_FAT_GROUPED": grouped,
+            "EXL3_TEMP_ROWS_FUSED": rows,
+            "MAX_MODEL_LEN": "262144",
+            "GPU_MEM_UTIL": "0.82",
+            "MAX_NUM_BATCHED_TOKENS": "2048",
+            "MAX_NUM_SEQS": "4",
+            "DFLASH_TOKENS": "7",
+            "GLM53_INDEXER_WORKSPACE": "rightsize",
+            "SERVED_MODEL_NAME": "glm-5.3-flash-exl3",
+            "LIMIT_MM": '{"image":32,"video":1}',
+        }
+        got = rank_runs(h, **overrides, GLM53_APC_RETENTION_INTERVAL="0", **{SWA: "0"})
+        check(got is not None, f"E1 grouped={grouped}: both rank launches captured")
+        if got is None:
+            continue
+        required = {
+            **overrides,
+            "VLLM_PREFIX_CACHE_RETENTION_INTERVAL": "0",
+            "VLLM_PREFIX_CACHE_RETENTION_INTERVAL_SWA": "0",
+        }
+        issues = parity_issues(*got, required)
+        check(not issues, f"E2 grouped={grouped}: " + ("; ".join(issues) if issues else "service overrides preserved"))
+
+
 # ------------------------------------------------------------------- main --
 
 
@@ -709,6 +737,7 @@ def main() -> int:
         part_b(h)
         part_c(h)
         part_d(h)
+        part_e(h)
     print()
     if FAILURES:
         print(f"FAILED ({len(FAILURES)}): " + "; ".join(FAILURES))
