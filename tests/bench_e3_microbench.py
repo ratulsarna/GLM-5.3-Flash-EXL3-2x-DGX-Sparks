@@ -99,7 +99,8 @@ def main() -> int:
     args = ap.parse_args()
     from vllm.model_executor.layers.quantization.exl3 import (
         _record_exl3_fat_resolution, apply_exl3_experts, apply_exl3_python_loop, exl3_fat_diag,
-        exl3_fat_moe_symbols,
+        exl3_fat_moe_symbols, reset_exl3_fat_diag_counters,
+        _FAT_SCRATCH_CACHE, _FAT_SCRATCH_BYTES, _FAT_GROUPED_CACHE, _FAT_GROUPED_BYTES,
     )
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from test_exl3_overlay import _assert_e3_within, _err_stats  # frozen tolerances
@@ -159,10 +160,16 @@ def main() -> int:
         print(f"\n== routing {dist}", flush=True)
         for tier, caps in (("E2", args.e2_caps), ("E3", args.e3_caps)):
             for cap in [int(c) for c in caps.split(",")]:
+                # Each case owns its scratch and peak; prior tiers must not inflate it.
+                torch.cuda.synchronize()
+                for cache in (_FAT_SCRATCH_CACHE, _FAT_SCRATCH_BYTES, _FAT_GROUPED_CACHE, _FAT_GROUPED_BYTES):
+                    cache.clear()
+                reset_exl3_fat_diag_counters()
                 os.environ["EXL3_FAT_GROUPED"] = "1" if tier == "E3" else "0"
                 _record_exl3_fat_resolution(layer)
                 set_cap(layer, cap)
                 torch.cuda.synchronize()
+                torch.cuda.reset_peak_memory_stats()
                 mem0 = torch.cuda.memory_allocated()
                 times = time_fn(lambda: apply_exl3_experts(x, ids, w, layer), iters=args.iters)
                 torch.cuda.synchronize()

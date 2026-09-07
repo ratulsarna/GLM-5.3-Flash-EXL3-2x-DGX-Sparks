@@ -25,7 +25,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 [[ -f .env ]] && set -a && . ./.env && set +a || true
-WORKER="${WORKER_USER:-zurih}@${WORKER_IP:-10.0.0.2}"
+WORKER="${WORKER_SSH:-${WORKER_USER:-$USER}@${WORKER_IP:-10.0.0.2}}"
 BASE="http://127.0.0.1:${PORT:-8888}"
 QUERY='clocks.sm,clocks.max.sm,power.draw,temperature.gpu,utilization.gpu'
 
@@ -42,8 +42,9 @@ start_telemetry() {
     local out=$1
     nvidia-smi --query-gpu="$QUERY" --format=csv -l 1 > "$out/head.csv" 2>&1 &
     echo $! > "$out/.head.pid"
-    ssh -o BatchMode=yes -o ConnectTimeout=8 "$WORKER" \
-        "nvidia-smi --query-gpu=$QUERY --format=csv -l 1" > "$out/worker.csv" 2>&1 &
+    # A remote PTY ties this sampler's lifetime to its SSH connection.
+    ssh -tt -o BatchMode=yes -o ConnectTimeout=8 "$WORKER" \
+        "exec nvidia-smi --query-gpu=$QUERY --format=csv -l 1" > "$out/worker.csv" 2>&1 &
     echo $! > "$out/.worker.pid"
 }
 
@@ -55,9 +56,6 @@ stop_telemetry() {
             rm -f "$out/.$r.pid"
         fi
     done
-    # the remote nvidia-smi survives the ssh client; reap it
-    ssh -o BatchMode=yes -o ConnectTimeout=8 "$WORKER" \
-        "pkill -f 'nvidia-smi --query-gpu' || true" 2>/dev/null || true
 }
 
 case "${1:-}" in
