@@ -338,21 +338,16 @@ def part_b(h: Harness) -> None:
     print("Part B: restart fails closed before any container is stopped")
     text = source()
     main_at = text.index("main() {")
-    v_revision = text.index("validate_dflash_revision", main_at)
     v_num = text.index("validate_numeric_config", main_at)
     v_art = text.index("validate_overlay_artifacts", main_at)
     restart = text.index("restart)  stop; start", main_at)
     check(
-        v_revision < v_num < restart and v_art < restart,
-        "B1 main() runs revision, numeric and artifact validators before `restart) stop; start`",
+        v_num < restart and v_art < restart,
+        "B1 main() runs the numeric and artifact validators before `restart) stop; start`",
     )
     check(
         "start|restart) validate_numeric_config; validate_overlay_artifacts ;;" in text,
         "B1 numeric and artifact validators share the start|restart arm",
-    )
-    check(
-        "start|restart|download) validate_dflash_revision ;;" in text,
-        "B1 the immutable revision guard covers start, restart and download",
     )
     guard_begin = text.index("# GLM53 overlay artifact guard (begin)")
     guard_end = text.index("# GLM53 overlay artifact guard (end)")
@@ -680,12 +675,15 @@ def part_d(h: Harness) -> None:
         tampered = Rank([])
         tampered.env = dict(worker.env)
         tampered.mounts = dict(worker.mounts)
-        tampered.env[FG] = "0" if tampered.env.get(FG) != "0" else "1"
+        tampered.env["VLLM_PREFIX_CACHE_RETENTION_INTERVAL_SWA"] = (
+            "0" if tampered.env.get("VLLM_PREFIX_CACHE_RETENTION_INTERVAL_SWA") != "0" else "1"
+        )
         dest = next(iter(sorted(tampered.mounts)))
         del tampered.mounts[dest]
         issues = parity_issues(head, tampered, scp, {})
         check(
-            any(f"env {FG}" in i for i in issues) and any("mount set differs" in i for i in issues),
+            any("env VLLM_PREFIX_CACHE_RETENTION_INTERVAL_SWA" in i for i in issues)
+            and any("mount set differs" in i for i in issues),
             f"D4 synthetic one-rank mismatch is reported ({len(issues)} issues: {issues[:2]})",
         )
         bad_scp = dict(scp)
@@ -693,34 +691,6 @@ def part_d(h: Harness) -> None:
         bad_scp[worker.mounts[wdest]] = "/somewhere/else.py"
         issues = parity_issues(head, worker, bad_scp, {})
         check(any(wdest in i for i in issues), f"D4 a worker scp fed from a different host file is reported ({issues[:1]})")
-
-
-def part_e(h: Harness) -> None:
-    print("Part E: service overrides survive E3 selection and E2 rollback on both ranks")
-    for grouped, rows in (("1", "32"), ("0", "128")):
-        overrides = {
-            "EXL3_FAT_GROUPED": grouped,
-            "EXL3_TEMP_ROWS_FUSED": rows,
-            "MAX_MODEL_LEN": "262144",
-            "GPU_MEM_UTIL": "0.82",
-            "MAX_NUM_BATCHED_TOKENS": "2048",
-            "MAX_NUM_SEQS": "4",
-            "DFLASH_TOKENS": "7",
-            "GLM53_INDEXER_WORKSPACE": "rightsize",
-            "SERVED_MODEL_NAME": "glm-5.3-flash-exl3",
-            "LIMIT_MM": '{"image":32,"video":1}',
-        }
-        got = rank_runs(h, **overrides, GLM53_APC_RETENTION_INTERVAL="0", **{SWA: "0"})
-        check(got is not None, f"E1 grouped={grouped}: both rank launches captured")
-        if got is None:
-            continue
-        required = {
-            **overrides,
-            "VLLM_PREFIX_CACHE_RETENTION_INTERVAL": "0",
-            "VLLM_PREFIX_CACHE_RETENTION_INTERVAL_SWA": "0",
-        }
-        issues = parity_issues(*got, required)
-        check(not issues, f"E2 grouped={grouped}: " + ("; ".join(issues) if issues else "service overrides preserved"))
 
 
 # ------------------------------------------------------------------- main --
@@ -737,7 +707,6 @@ def main() -> int:
         part_b(h)
         part_c(h)
         part_d(h)
-        part_e(h)
     print()
     if FAILURES:
         print(f"FAILED ({len(FAILURES)}): " + "; ".join(FAILURES))

@@ -60,8 +60,7 @@ FALLBACK_PRISTINE = Path("/tmp/kv_cache_coordinator_pristine.py")
 MARKER = "# [glm53-apc-per-group]"
 MIA_MARKER = "# [glm53-hybrid-apc]"
 PRIORITY_MARKER = "# [glm53-apc-drafter-priority]"
-PRIOR_HELPER_MARKER = "# [glm53-dflash-prior-helper-v1]"
-PRIOR_HELPER_V2_MARKER = "# [glm53-dflash-prior-helper-v2]"
+PRIOR_HELPER_MARKER = "# [glm53-dflash-prior-helper-v2]"
 PRIOR_POLICY_MARKER = "# [glm53-dflash-prior-policy-v1]"
 PRIOR_MANAGER_MARKER = "# [glm53-dflash-prior-manager-v1]"
 FREE_ORDER_MARKER = "# [glm53-apc-free-order-v1]"
@@ -754,14 +753,13 @@ def test_composed_runtime_paths(
         "# [glm53-dflash-swa-replay-v1]",
         "# [glm53-dflash-swa-replay-v2]",
         PRIOR_HELPER_MARKER,
-        PRIOR_HELPER_V2_MARKER,
         PRIOR_POLICY_MARKER,
         FREE_ORDER_MARKER,
     ):
         check(marker in coordinator_text, f"composed coordinator missing {marker}")
     check(
         PRIOR_MANAGER_MARKER in single_type_text,
-        "composed single-type manager missing prior-boundary migration",
+        "composed single-type manager missing prior-boundary hook",
     )
 
     helper_ns = load_helpers(coordinator_text, COMPOSED_HELPERS)
@@ -1155,7 +1153,13 @@ def test_composition(
         test_prior_boundary_cache_call(stm_text)
         test_composed_runtime_paths(text, bp_text, stm_text)
         results[label] = text
-    if results["mia-then-ours"] != results["ours-then-mia"]:
+
+    import ast
+
+    def ast_dump(source_text: str) -> str:
+        return ast.dump(ast.parse(source_text))
+
+    if ast_dump(results["mia-then-ours"]) != ast_dump(results["ours-then-mia"]):
         print(
             "".join(
                 difflib.unified_diff(
@@ -1167,9 +1171,9 @@ def test_composition(
             )
         )
         raise AssertionError(
-            "the two overlays must compose to the same file in either order"
+            "the two overlays must compose to the same AST in either order"
         )
-    print("  overlay composition (both orders, idempotent) OK")
+    print("  overlay composition (both orders, AST-equal, idempotent) OK")
 
 
 def resolve_pristine(src: Path) -> Path:

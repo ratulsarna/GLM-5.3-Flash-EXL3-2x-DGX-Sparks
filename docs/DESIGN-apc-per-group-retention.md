@@ -372,8 +372,8 @@ capacity by coarsening only the group whose hit is thrown away — so capacity *
 | Mamba dense again ⇒ 4 ids/segment instead of 1 | Included in the §5.4 arithmetic (the 5). Still 7.6× cheaper than dense-with-drafter. |
 | A group getting `0` when it *is* in the `min()` | An explicit override requires a hybrid coordinator plus min-exemption derived from `eagle_group_ids` (§5.2). Mamba and MLA must never receive `0` — a missing mamba state is a correctness hole (vLLM #47491/#43090, quoted in `overlay/patch_hybrid_prefix_hit.py`). |
 | Env/validation drift | `_validate_prefix_cache_retention_interval` (`C:46-73`) must run per group; the patch adds a per-group validator over the *resolved* vector **and** validates the raw SWA value unconditionally (non-negative, scheduler-block multiple, ≤ 1,000,000). Both fail closed at boot. |
-| Stale global knob (Codex #6) | The launcher may still be exporting `GLM53_APC_RETENTION_INTERVAL=14336`, in which case the fine hit grid is *not* restored and the win is only capacity. This is why the acceptance criterion is the **resolved vector**, logged at init (§7), not the env var: the head must show `retention_by_group=[None,None,None,None,None,None,0]`. |
-| Drafter reads zeroed KV after a sparse miss (Codex #2) | Freshly allocated drafter blocks are zeroed worker-side (`S:90-93`), so they never carry another request's data — but "zeroed" is not *valid* KV for the preceding prompt tokens either. Target verification hides this in the output; it does not make it safe. Gated by the divergence-suffix + acceptance-rate probes in §8.2 (L5a/L5b), not by the equivalence gate. |
+| Stale global knob  | The launcher may still be exporting `GLM53_APC_RETENTION_INTERVAL=14336`, in which case the fine hit grid is *not* restored and the win is only capacity. This is why the acceptance criterion is the **resolved vector**, logged at init (§7), not the env var: the head must show `retention_by_group=[None,None,None,None,None,None,0]`. |
+| Drafter reads zeroed KV after a sparse miss  | Freshly allocated drafter blocks are zeroed worker-side (`S:90-93`), so they never carry another request's data — but "zeroed" is not *valid* KV for the preceding prompt tokens either. Target verification hides this in the output; it does not make it safe. Gated by the divergence-suffix + acceptance-rate probes in §8.2 (L5a/L5b), not by the equivalence gate. |
 | Worker rank | The knob must reach both ranks like the existing one (`start.sh:1136-1140`). |
 
 ---
@@ -401,7 +401,7 @@ It would work on capacity (a recycled block costs zero deep pops), but:
 
 Keep it documented as a fallback only if the per-group threading turns out to be infeasible.
 
-**Codex #3:** reason (1) is argued from `B:571-590` / `B:702-717`, it is **not tested** — no shared-hash
+Reason (1) is argued from `B:571-590` / `B:702-717`, it is **not tested** — no shared-hash
 regression exists, because Design B is not implemented. If Design B is ever revived, that test is a
 prerequisite, not a follow-up: construct two requests sharing a hashed block, let one slide its window
 past it, and assert the other's `cached_block_hash_to_block` entry survives. Until then, uncached frees
@@ -457,7 +457,7 @@ Runs anywhere with a copy of `kv_cache_coordinator.py`; no GPU, no vLLM import.
 2. **Call sites and boot log.** Zero remaining `retention_interval=self.retention_interval,`, exactly two
    `retention_interval_by_group[i]`, only the two `cache_blocks` loops enumerated, and an init
    `logger.info` carrying `retention_by_group=%s` fed from `_glm53_format_retention_vector`.
-3. **Min-exemption derivation** (Codex #4). `_glm53_min_exempt_group_ids` over the live seven-group
+3. **Min-exemption derivation** . `_glm53_min_exempt_group_ids` over the live seven-group
    hybrid layout: `{6}` under `eagle_group_ids={6}`; **empty** for a base coordinator, under the upstream
    all-groups fallback, under `{0}`, under the superset `{0,6}`, under `∅`, and when the only SWA-derived
    spec is `KpoolTailSpec`. A unitary SWA/EAGLE base coordinator is explicitly not exempt.
@@ -469,15 +469,15 @@ Runs anywhere with a copy of `kv_cache_coordinator.py`; no GPU, no vLLM import.
 5. **Resolved vector + fail-closed override.** `_glm53_resolve_retention_by_group` over the live layout
    returns `(None,)*6 + (0,)` and renders as `[None,None,None,None,None,None,0]` — the exact string the
    deployment acceptance criterion greps for. A leftover global `14336` shows up in the vector rather
-   than being hidden (Codex #6). Setting the SWA value raises `ValueError` for every non-exempt
+   than being hidden . Setting the SWA value raises `ValueError` for every non-exempt
    `eagle_group_ids`, for a model with no SWA group, and for a unitary SWA/EAGLE base coordinator, while
    an unset value inherits the global policy there.
-6. **Unconditional env validation** (Codex #5). `_glm53_swa_retention_env` accepts unset/empty/blank →
+6. **Unconditional env validation** . `_glm53_swa_retention_env` accepts unset/empty/blank →
    inherit-global, `0`, `14336`, and `999936` (= 279·3584, the largest legal value); rejects junk (`"nope"`,
    `"3584.0"`), negatives (`-1`, `-3584`), non-multiples (`1`, `3000`) and over-cap (`1003520`), and its
    documented cap is asserted to be exactly `1,000,000`. The per-group validator over the resolved
    vector is asserted separately (no cap there — inherited *global* values are upstream's to bound).
-7. **Overlay composition** (Codex #8). Against a **pristine** copy of the fork's file, apply
+7. **Overlay composition** . Against a **pristine** copy of the fork's file, apply
    `patch_hybrid_prefix_hit.py` then this one, and this one then `patch_hybrid_prefix_hit.py`. Both
    orders must apply, `py_compile`, carry both MARKs, define the shared `_glm53_inner_kv_spec` /
    `_glm53_is_draft_swa_spec` exactly once, add `import os` exactly once, survive re-application of
@@ -489,7 +489,7 @@ Runs anywhere with a copy of `kv_cache_coordinator.py`; no GPU, no vLLM import.
    formula evaluated for all five rows — `14 / 23 / 42 / 72 / 54` — so the doc's table and the test
    cannot drift apart.
 
-Exit non-zero on any failure (Codex's "validators must fail closed" rule).
+Exit non-zero on any failure (validators must fail closed).
 
 **Status: green.** Run:
 
@@ -511,7 +511,7 @@ Control: today's default `GLM53_APC_RETENTION_INTERVAL=14336`.
 
 | # | probe | pass criterion |
 |---|---|---|
-| L1 | boot receipt | `docker logs … \| grep retention_by_group` shows **`retention_by_group=[None,None,None,None,None,None,0]`** on **both** ranks (this, not the env var, is the acceptance criterion — Codex #6); `docker exec … env` on both ranks shows the SWA var |
+| L1 | boot receipt | `docker logs … \| grep retention_by_group` shows **`retention_by_group=[None,None,None,None,None,None,0]`** on **both** ranks (this, not the env var, is the acceptance criterion); `docker exec … env` on both ranks shows the SWA var |
 | L2 | pair ladder 45K / 56K / 66K / 80K (`tests/validate_apc_retention.py`) | **all ≥ 96 %**; predicted headroom to ~193.5K/conv (§4.1 — an *ordering* prediction, already one segment optimistic at `R=7168`) |
 | L3 | 3-turn multiturn | ≥ 99 % per turn; re-turn TTFT 0.9–4.0 s |
 | L4 | subagent divergence (the ~20K shared-prefix probe) | hit lands on the **3584** grid ⇒ **65–70 %** (vs 45 % at 14336, 67.6 % at 7168) |
@@ -520,7 +520,7 @@ Control: today's default `GLM53_APC_RETENTION_INTERVAL=14336`.
 | L6 | equivalence gate v3 (logprob, A13 thresholds: cold-vs-warm max\|Δlogprob\| ≤ 3× the cold-vs-cold floor, position-0 token identical) | pass — **necessary, not sufficient**, see below |
 | L7 | pool pressure | `vllm:kv_cache_usage_perc` after L2 ≤ the 14336 control's value |
 
-#### L5a — divergence-suffix sweep (Codex #2)
+#### L5a — divergence-suffix sweep 
 
 A sparse drafter miss allocates a **fresh, zeroed** window (`S:90-93`). Zeroed is not another request's
 data — but it is not valid KV for the preceding 2048 prompt tokens either, and the target's verification
@@ -554,7 +554,7 @@ yields it more slowly, with a collapsed acceptance rate. L6 therefore gates *cor
 L5a gates *validity of the drafter state*. Neither substitutes for the other, and only L5a can fail in a
 way that says "the speculative path is now doing no work".
 
-#### Reproducibility (Codex #7)
+#### Reproducibility
 
 Every validator asserts and exits non-zero; refuse a busy server; require each metric to be present
 rather than defaulting to pass. Beyond that:
@@ -602,7 +602,7 @@ A third, smaller upstream note worth filing separately: `SlidingWindowManager.fi
 valuable once SWA groups cache sparsely — it turns the miss scan from O(n) into O(n/need + need).
 
 
-## 9.1 Initialized-KV evidence (Codex final pass, finding 2)
+## 9.1 Initialized-KV evidence
 What can be proven from code today: a drafter (SWA) miss at a boundary is served by `add_local_computed_blocks` padding
 nulls and `allocate_new_blocks` pulling a fresh window whose block ids are recorded via `_record_new_block_ids`
 (single_type_kv_cache_manager.py:270-286, :332-364), i.e. the drafter never reads another request's data — the blocks are

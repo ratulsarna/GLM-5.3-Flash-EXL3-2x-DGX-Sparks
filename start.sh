@@ -57,76 +57,23 @@ if [ ! -f "$SCRIPT_DIR/.env" ]; then
     cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
     printf '\033[1;36m[glm53-exl3]\033[0m wrote .env from .env.example — edit HEAD_IP / WORKER_IP if needed\n'
 fi
-# Caller exports (MTP_TOKENS=2 ./start.sh restart) must win over .env.
-_cli_mtp="${MTP_TOKENS-}"
-_cli_spec="${SPEC_METHOD-}"
-_cli_dflash_draft_tp_set="${DFLASH_DRAFT_TP+1}"
-_cli_dflash_draft_tp="${DFLASH_DRAFT_TP-}"
-_cli_eager="${ENFORCE_EAGER-}"
-_cli_fused="${EXL3_FUSED_MOE-}"
-_cli_row_tile="${EXL3_MOE_ROW_TILE-}"
-_cli_temp_rows="${EXL3_TEMP_ROWS_FUSED-}"
-_cli_fat_sorted="${EXL3_FAT_SORTED-}"
-_cli_fat_batched="${EXL3_FAT_BATCHED-}"
-_cli_fat_kernel="${EXL3_FAT_KERNEL-}"
-_cli_fat_grouped="${EXL3_FAT_GROUPED-}"
-_cli_mnbt="${MAX_NUM_BATCHED_TOKENS-}"
-_cli_image="${IMAGE-}"
-_cli_util="${GPU_MEM_UTIL-}"
-_cli_lm="${LANGUAGE_MODEL_ONLY-}"
-_cli_max_num_seqs="${MAX_NUM_SEQS-}"
-_cli_max_model_len="${MAX_MODEL_LEN-}"
-_cli_limit_mm="${LIMIT_MM-}"
-_cli_served_model="${SERVED_MODEL_NAME-}"
-_cli_ablit="${ABLIT-}"
-_cli_ablit_method="${ABLIT_METHOD-}"
-_cli_ablit_direction="${ABLIT_DIRECTION-}"
-_cli_ablit_layers="${ABLIT_LAYERS-}"
-_cli_ablit_alpha="${ABLIT_ALPHA-}"
-_cli_ablit_mtp="${ABLIT_INCLUDE_MTP-}"
-# Setness-aware: an explicitly empty caller value is an operator error and
-# must reach validate_numeric_config, not be swallowed by a .env value.
-_cli_indexer_workspace_set="${GLM53_INDEXER_WORKSPACE+1}"
-_cli_indexer_workspace="${GLM53_INDEXER_WORKSPACE-}"
-_cli_spinwait_ms_set="${GLM53_SPINWAIT_MS+1}"
-_cli_spinwait_ms="${GLM53_SPINWAIT_MS-}"
-_cli_apc_global_set="${GLM53_APC_RETENTION_INTERVAL+1}"
-_cli_apc_global="${GLM53_APC_RETENTION_INTERVAL-}"
-_cli_apc_swa_set="${GLM53_APC_RETENTION_INTERVAL_SWA+1}"
-_cli_apc_swa="${GLM53_APC_RETENTION_INTERVAL_SWA-}"
+# Caller exports, including explicit empties, must win over .env.
+# Snapshot exports rather than parsing .env: it is sourced as shell code.
+_caller_overrides=()
+while IFS= read -r _k; do
+    _flags="$(declare -p "$_k")"
+    _flags="${_flags#declare -}"; _flags="${_flags%% *}"
+    case "$_flags" in *r*) continue ;; esac
+    if [ -n "${!_k+x}" ]; then _caller_overrides+=("$_k=${!_k}"); fi
+done < <(compgen -e)
 set -a
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/.env"
 set +a
-[ -n "${_cli_mtp}" ] && MTP_TOKENS="$_cli_mtp"
-[ -n "${_cli_apc_global_set}" ] && GLM53_APC_RETENTION_INTERVAL="$_cli_apc_global"
-[ -n "${_cli_apc_swa_set}" ] && GLM53_APC_RETENTION_INTERVAL_SWA="$_cli_apc_swa"
-[ -n "${_cli_spec}" ] && SPEC_METHOD="$_cli_spec"
-[ -n "${_cli_dflash_draft_tp_set}" ] && DFLASH_DRAFT_TP="$_cli_dflash_draft_tp"
-[ -n "${_cli_eager}" ] && ENFORCE_EAGER="$_cli_eager"
-[ -n "${_cli_fused}" ] && EXL3_FUSED_MOE="$_cli_fused"
-[ -n "${_cli_row_tile}" ] && EXL3_MOE_ROW_TILE="$_cli_row_tile"
-[ -n "${_cli_temp_rows}" ] && EXL3_TEMP_ROWS_FUSED="$_cli_temp_rows"
-[ -n "${_cli_fat_sorted}" ] && EXL3_FAT_SORTED="$_cli_fat_sorted"
-[ -n "${_cli_fat_batched}" ] && EXL3_FAT_BATCHED="$_cli_fat_batched"
-[ -n "${_cli_fat_kernel}" ] && EXL3_FAT_KERNEL="$_cli_fat_kernel"
-[ -n "${_cli_fat_grouped}" ] && EXL3_FAT_GROUPED="$_cli_fat_grouped"
-[ -n "${_cli_mnbt}" ] && MAX_NUM_BATCHED_TOKENS="$_cli_mnbt"
-[ -n "${_cli_image}" ] && IMAGE="$_cli_image"
-[ -n "${_cli_util}" ] && GPU_MEM_UTIL="$_cli_util"
-[ -n "${_cli_lm}" ] && LANGUAGE_MODEL_ONLY="$_cli_lm"
-[ -n "${_cli_max_num_seqs}" ] && MAX_NUM_SEQS="$_cli_max_num_seqs"
-[ -n "${_cli_max_model_len}" ] && MAX_MODEL_LEN="$_cli_max_model_len"
-[ -n "${_cli_limit_mm}" ] && LIMIT_MM="$_cli_limit_mm"
-[ -n "${_cli_served_model}" ] && SERVED_MODEL_NAME="$_cli_served_model"
-[ -n "${_cli_ablit}" ] && ABLIT="$_cli_ablit"
-[ -n "${_cli_ablit_method}" ] && ABLIT_METHOD="$_cli_ablit_method"
-[ -n "${_cli_ablit_direction}" ] && ABLIT_DIRECTION="$_cli_ablit_direction"
-[ -n "${_cli_ablit_layers}" ] && ABLIT_LAYERS="$_cli_ablit_layers"
-[ -n "${_cli_ablit_alpha}" ] && ABLIT_ALPHA="$_cli_ablit_alpha"
-[ -n "${_cli_ablit_mtp}" ] && ABLIT_INCLUDE_MTP="$_cli_ablit_mtp"
-[ -n "${_cli_indexer_workspace_set}" ] && GLM53_INDEXER_WORKSPACE="$_cli_indexer_workspace"
-[ -n "${_cli_spinwait_ms_set}" ] && GLM53_SPINWAIT_MS="$_cli_spinwait_ms"
+# Each entry is NAME=value; quoting preserves whitespace and empty values.
+# shellcheck disable=SC2163
+for _kv in ${_caller_overrides[@]+"${_caller_overrides[@]}"}; do export "$_kv"; done
+unset _k _kv _flags _caller_overrides
 
 # ----------------------------- configuration -------------------------------
 MODEL="${MODEL:-Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw}"
@@ -185,8 +132,11 @@ MTP_TOKENS="${MTP_TOKENS:-2}"
 # dflash (default, incoai/GLM-5.3-Flash-DFlash2, k=7) | mtp | none
 SPEC_METHOD="${SPEC_METHOD:-dflash}"
 DFLASH_MODEL="${DFLASH_MODEL:-incoai/GLM-5.3-Flash-DFlash2}"
-DFLASH_REVISION="${DFLASH_REVISION:-dc77ff1c99eeb2df044ee3d4f0094eb033fee410}"
 DFLASH_CACHE_NAME="${DFLASH_CACHE_NAME:-models--${DFLASH_MODEL//\//--}}"
+# Receipt-matched DFlash2 checkpoint used by the 2026-08-30 TP=2 results.
+# A mutable Hub main has already changed weights, so fresh and warm installs
+# must resolve the same snapshot unless the operator deliberately overrides it.
+DFLASH_REVISION="${DFLASH_REVISION-dc77ff1c99eeb2df044ee3d4f0094eb033fee410}"
 DFLASH_TOKENS="${DFLASH_TOKENS:-7}"
 # 2 = shard the ~2.3 GiB DFlash2 drafter across TP (C4 keep, 2026-08-30:
 # idle 8k 938 / 16k 972 / 100k 997; decode structured 65.1 / prose 27.1).
@@ -205,6 +155,8 @@ MAX_NUM_SEQS="${MAX_NUM_SEQS:-4}"
 # 8192 chunk × long history oversubscribes GB10 persistent_topk smem (300k crash).
 # E2 one-shot 2026-09-01: 7168 keep (100k ~1148 / 300k ~1107); 2048/3548 similar or slower.
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-7168}"
+# Empty preserves the stock scheduler; opt in after measuring contention.
+LONG_PREFILL_TOKEN_THRESHOLD="${LONG_PREFILL_TOKEN_THRESHOLD:-}"
 CHAT_TEMPLATE_HOST="${CHAT_TEMPLATE_HOST:-$SCRIPT_DIR/files/chat_template.jinja}"
 CHAT_TEMPLATE="${CHAT_TEMPLATE:-/opt/glm53/chat_template.jinja}"
 VIDEO_PATCH_HOST="${VIDEO_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_glm_video_placeholders.py}"
@@ -216,13 +168,16 @@ PERGROUP_PATCH_HOST="${PERGROUP_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_apc_per_gr
 XGRAMMAR_PATCH_HOST="${XGRAMMAR_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_xgrammar_termination.py}"
 KPOOL_TAIL_PATCH_HOST="${KPOOL_TAIL_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_kpool_tail_slotmap.py}"
 SPINWAIT_PATCH_HOST="${SPINWAIT_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_spinwait.py}"
+ADAPTIVE_K_PATCH_HOST="${ADAPTIVE_K_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_adaptive_k.py}"
+DENSE_FP8_PATCH_HOST="${DENSE_FP8_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_dense_fp8.py}"
+EXL3_OVERLAY_HOST="${EXL3_OVERLAY_HOST:-$SCRIPT_DIR/overlay/exl3.py}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 QUANTIZATION="${QUANTIZATION:-exl3}"
 LANGUAGE_MODEL_ONLY="${LANGUAGE_MODEL_ONLY:-0}"
 SKIP_MM_PROFILING="${SKIP_MM_PROFILING:-1}"
 # JSON default cannot sit in ${LIMIT_MM:-{...}} — } ends the expansion.
 if [ -z "${LIMIT_MM:-}" ]; then
-    LIMIT_MM='{"image":4,"video":1}'
+    LIMIT_MM='{"image":100,"video":1}'
 fi
 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-12.1a}"
 FLASHINFER_CUDA_ARCH_LIST="${FLASHINFER_CUDA_ARCH_LIST:-12.1a}"
@@ -287,6 +242,19 @@ GLM53_SUPPRESS_STOPS_IN_REASONING="${GLM53_SUPPRESS_STOPS_IN_REASONING:-1}"
 # Mixed-step prefill policy when a peer is already decoding (issue #6).
 # skip = do not mix; N>0 = cap tokens; 0 = off.
 GLM53_MIXED_PREFILL_CHUNK="${GLM53_MIXED_PREFILL_CHUNK:-skip}"
+# Adaptive verification length (overlay/patch_adaptive_k.py). off = stock k=7 every step.
+GLM53_ADAPTIVE_K="${GLM53_ADAPTIVE_K:-off}"
+GLM53_ADAPTIVE_K_SET="${GLM53_ADAPTIVE_K_SET:-2,4,7}"
+GLM53_ADAPTIVE_K_ALPHA="${GLM53_ADAPTIVE_K_ALPHA:-0.25}"
+GLM53_ADAPTIVE_K_MARGIN="${GLM53_ADAPTIVE_K_MARGIN:-1.0}"
+GLM53_ADAPTIVE_K_MIN_STEPS="${GLM53_ADAPTIVE_K_MIN_STEPS:-4}"
+GLM53_ADAPTIVE_K_SATURATE="${GLM53_ADAPTIVE_K_SATURATE:-max}"
+GLM53_ADAPTIVE_K_HIST="${GLM53_ADAPTIVE_K_HIST:-200}"
+# Dense projections FP8 weight-only via Marlin (overlay/patch_dense_fp8.py). off = BF16 as shipped.
+# PROVISIONAL (changes target numerics; needs a KLD panel). Groups: shared,dense,kda,mla.
+GLM53_DENSE_FP8="${GLM53_DENSE_FP8:-off}"
+# Empty leaves the template's omitted-effort fallback unchanged.
+GLM53_DEFAULT_REASONING_EFFORT="${GLM53_DEFAULT_REASONING_EFFORT-}"
 # Sparse-indexer prefill gather workspace (overlay/patch_indexer_workspace.py).
 # stock = max_model_len * 40 entries (5036.40 MB locked at 1M, measured);
 # rightsize = the legal per-step maximum, ~+26% KV (default since 2026-09-07:
@@ -430,9 +398,18 @@ validate_numeric_config() {
     _glm53_canonical_positive_int MAX_MODEL_LEN "$MAX_MODEL_LEN" 1000000 || return
     _glm53_canonical_positive_int MAX_NUM_SEQS "$MAX_NUM_SEQS" 4096 || return
     _glm53_canonical_positive_int MAX_NUM_BATCHED_TOKENS "$MAX_NUM_BATCHED_TOKENS" 8388608 || return
+    if [ -n "${LONG_PREFILL_TOKEN_THRESHOLD:-}" ]; then
+        _glm53_canonical_positive_int LONG_PREFILL_TOKEN_THRESHOLD \
+            "$LONG_PREFILL_TOKEN_THRESHOLD" "$MAX_NUM_BATCHED_TOKENS" || return
+    fi
     _glm53_validate_enum GLM53_INDEXER_WORKSPACE "${GLM53_INDEXER_WORKSPACE-rightsize}" \
         stock rightsize || return
     _glm53_validate_spinwait_ms || return
+    # The template treats medium as max, so do not advertise it as a level.
+    if [ -n "${GLM53_DEFAULT_REASONING_EFFORT-}" ]; then
+        _glm53_validate_enum GLM53_DEFAULT_REASONING_EFFORT \
+            "$GLM53_DEFAULT_REASONING_EFFORT" low high max || return
+    fi
     _glm53_validate_retention_interval GLM53_APC_RETENTION_INTERVAL "${GLM53_APC_RETENTION_INTERVAL-}" || return
     _glm53_validate_retention_interval GLM53_APC_RETENTION_INTERVAL_SWA "${GLM53_APC_RETENTION_INTERVAL_SWA-}" || return
     if [ -n "${GLM53_APC_RETENTION_INTERVAL_SWA:-}" ] && [ "$SPEC_METHOD" != "dflash" ]; then
@@ -441,13 +418,6 @@ validate_numeric_config() {
     fi
 }
 # GLM53 numeric config guard (end)
-
-validate_dflash_revision() {
-    if ! [[ "$DFLASH_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
-        echo "DFLASH_REVISION must be a lowercase 40-hex commit (got: $DFLASH_REVISION)" >&2
-        return 2
-    fi
-}
 
 # GLM53 overlay artifact guard (begin)
 # Every file both rank containers mount. main() runs validate_overlay_artifacts
@@ -477,6 +447,8 @@ validate_overlay_artifacts() {
         "$XGRAMMAR_PATCH_HOST|vllm/v1/structured_output/|$main_guard"
         "$KPOOL_TAIL_PATCH_HOST|[glm53-kpool-tail-slotmap]|$main_guard"
         "$SPINWAIT_PATCH_HOST|device_communicators/shm_broadcast.py|$main_guard"
+        "$ADAPTIVE_K_PATCH_HOST|[glm53-adaptive-k]|$main_guard"
+        "$DENSE_FP8_PATCH_HOST|[glm53-dense-fp8]|$main_guard"
         "$SCRIPT_DIR/overlay/patch_ablit.py|$ablit_marker|    main()"
         "$SCRIPT_DIR/overlay/ablit_runtime.py|o_proj abliteration (ABLIT)|    return report"
     )
@@ -547,7 +519,15 @@ worker_ssh() { ssh -T -o BatchMode=yes -o ConnectTimeout=15 "$WORKER_SSH" "$@"; 
 usage() { sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 count_shards() {
-    find "$1/snapshots" -name '*.safetensors' 2>/dev/null | wc -l | tr -d '[:space:]' || true
+    local repo_path="$1" ref
+    ref="$(cat "$repo_path/refs/main" 2>/dev/null || true)"
+    [ -n "$ref" ] || ref="$(ls -1t "$repo_path/snapshots" 2>/dev/null | head -n 1 || true)"
+    if [ -z "$ref" ]; then
+        printf '0'
+        return
+    fi
+    find -L "$repo_path/snapshots/$ref" -maxdepth 1 -type f -name '*.safetensors' 2>/dev/null \
+        | wc -l | tr -d '[:space:]' || true
 }
 
 ensure_refs_main() {
@@ -570,23 +550,26 @@ resolve_model_dir() {
 }
 
 ensure_dflash_refs_main() {
-    local ref="$DFLASH_PATH/refs/main" snap="$DFLASH_REVISION" dir current=""
-    dir="$DFLASH_PATH/snapshots/$snap"
-    [ -f "$dir/config.json" ] && [ -f "$dir/model.safetensors" ] \
-        || die "pinned DFlash2 snapshot $snap is incomplete under $DFLASH_PATH — re-run download"
-    [ -f "$ref" ] && current="$(<"$ref")"
-    [ "$current" = "$snap" ] && return 0
+    local ref="$DFLASH_PATH/refs/main" snap
+    [ -f "$ref" ] && [ -n "$(<"$ref")" ] && return 0
+    snap="$(ls -1t "$DFLASH_PATH/snapshots" 2>/dev/null | head -n 1 || true)"
+    [ -n "$snap" ] || die "no snapshots under $DFLASH_PATH — re-run download"
     mkdir -p "$DFLASH_PATH/refs"
     printf '%s' "$snap" >"$ref"
-    log "wrote DFlash2 refs/main -> pinned revision $snap"
+    log "wrote DFlash2 refs/main -> $snap"
 }
 
 resolve_dflash_dir() {
     local ref="$DFLASH_PATH/refs/main" hash dir
-    ensure_dflash_refs_main
-    hash="$(<"$ref")"
+    if [ -n "${DFLASH_REVISION:-}" ]; then
+        hash="$DFLASH_REVISION"
+    else
+        ensure_dflash_refs_main
+        hash="$(<"$ref")"
+    fi
     dir="$DFLASH_PATH/snapshots/$hash"
     [ -f "$dir/config.json" ] || die "DFlash2 config.json missing in $dir"
+    [ -f "$dir/model.safetensors" ] || die "DFlash2 model.safetensors missing in $dir"
     printf '/root/.cache/huggingface/hub/%s/snapshots/%s' "$DFLASH_CACHE_NAME" "$hash"
 }
 
@@ -671,6 +654,9 @@ preflight() {
     [ -f "$XGRAMMAR_PATCH_HOST" ] || die "$XGRAMMAR_PATCH_HOST missing"
     [ -f "$KPOOL_TAIL_PATCH_HOST" ] || die "$KPOOL_TAIL_PATCH_HOST missing"
     [ -f "$SPINWAIT_PATCH_HOST" ] || die "$SPINWAIT_PATCH_HOST missing"
+    [ -f "$ADAPTIVE_K_PATCH_HOST" ] || die "$ADAPTIVE_K_PATCH_HOST missing"
+    [ -f "$DENSE_FP8_PATCH_HOST" ] || die "$DENSE_FP8_PATCH_HOST missing"
+    [ -f "$EXL3_OVERLAY_HOST" ] || die "$EXL3_OVERLAY_HOST missing"
     [ -f "$SCRIPT_DIR/overlay/patch_ablit.py" ] || die "$SCRIPT_DIR/overlay/patch_ablit.py missing"
     [ -f "$SCRIPT_DIR/overlay/ablit_runtime.py" ] || die "$SCRIPT_DIR/overlay/ablit_runtime.py missing"
     [ -f "$SCRIPT_DIR/ablit/LAYER_MAP.json" ] || die "$SCRIPT_DIR/ablit/LAYER_MAP.json missing"
@@ -716,14 +702,23 @@ login_ghcr_if_token_worker() {
     echo "$GHCR_TOKEN" | worker_ssh "docker login ghcr.io -u '$GHCR_USER' --password-stdin" >/dev/null
 }
 
-# RepoDigest is stable across overlay2 vs containerd. Those snapshotters
-# disagree on .Id (config digest vs index digest), so start.sh used to
-# ship even after the worker had already pulled the same GHCR tag (issue #8).
-# Local builds have no RepoDigest — use RootFS layer diffs, then .Id.
-_IMAGE_KEY_FMT='{{if .RepoDigests}}{{index .RepoDigests 0}}{{else if .RootFS.Layers}}{{join .RootFS.Layers ","}}{{else}}{{.Id}}{{end}}'
+# Identity for "does the worker already have the head's image?". No single
+# field survives every path: overlay2 and containerd disagree on .Id (config
+# digest vs index digest, issue #8), and docker save | docker load drops
+# RepoDigests, so a shipped image never matched the GHCR tag it came from and
+# we re-shipped the whole image on every run. RootFS.Layers (diff IDs) is
+# identical on both sides in both cases — fold it into a short digest (the
+# full layer list does not belong in a log line) and keep RepoDigest/.Id only
+# as fallbacks for the rare inspect that reports no layers.
+_IMAGE_KEY_FMT='{{if .RootFS.Layers}}layers {{join .RootFS.Layers ","}}{{else if .RepoDigests}}other {{index .RepoDigests 0}}{{else}}other {{.Id}}{{end}}'
 
 parse_image_key() {
-    tr -d '\r' | sed -n 's/^GLM53KEY //p' | tail -n 1
+    local raw
+    raw="$(tr -d '\r' | sed -n 's/^GLM53KEY //p' | tail -n 1)"
+    case "$raw" in
+        "layers "*) printf 'layers:%s' "$(printf '%s' "${raw#layers }" | sha256sum | cut -c1-16)" ;;
+        "other "*)  printf '%s' "${raw#other }" ;;
+    esac
 }
 
 local_image_key() {
@@ -830,17 +825,18 @@ ensure_image() {
     fi
     local skip_pull="${SKIP_PULL:-0}"
     [ "${PULL:-0}" = "1" ] && skip_pull=0
-    local wanted_stamp have_stamp
+    local wanted_stamp have_stamp have_short
     wanted_stamp="$(overlay_recipe_hash)"
     have_stamp=""
     [ "$head_ok" = "1" ] && have_stamp="$(image_recipe_stamp)"
+    have_short="${have_stamp:0:12}"
     if [ "${BUILD:-0}" != "1" ] && [ "${SKIP_BUILD:-0}" != "1" ]; then
         if [ "$head_ok" = "0" ] || [ "$have_stamp" != "$wanted_stamp" ]; then
-            log "image recipe ${have_stamp:-none} != repo ${wanted_stamp:0:12} — rebuilding (SKIP_BUILD=1 keeps GHCR)"
+            log "image recipe ${have_short:-none} != repo ${wanted_stamp:0:12} — rebuilding (SKIP_BUILD=1 keeps GHCR)"
             BUILD=1
         fi
     elif [ "${SKIP_BUILD:-0}" = "1" ] && [ "$have_stamp" != "$wanted_stamp" ]; then
-        warn "SKIP_BUILD=1 — not rebuilding; stamp ${have_stamp:-none} != repo ${wanted_stamp:0:12}"
+        warn "SKIP_BUILD=1 — not rebuilding; stamp ${have_short:-none} != repo ${wanted_stamp:0:12}"
     fi
     if [ "${BUILD:-0}" = "1" ]; then
         build_image
@@ -1002,21 +998,26 @@ download_weights() {
 download_dflash() {
     [ "$SPEC_METHOD" = "dflash" ] || return 0
     [ "${SKIP_DOWNLOAD:-0}" = "1" ] && { log "SKIP_DOWNLOAD=1 — skipping DFlash2 download check"; return; }
-    local pinned_dir="$DFLASH_PATH/snapshots/$DFLASH_REVISION"
-    if [ -f "$pinned_dir/config.json" ] && [ -f "$pinned_dir/model.safetensors" ] \
-        && [ "${REFRESH_WEIGHTS:-0}" != "1" ]; then
-        log "DFlash2 pinned revision already present: $pinned_dir"
+    local have=0 selected=""
+    if [ -n "${DFLASH_REVISION:-}" ]; then
+        selected="$DFLASH_PATH/snapshots/$DFLASH_REVISION"
+    elif [ -s "$DFLASH_PATH/refs/main" ]; then
+        selected="$DFLASH_PATH/snapshots/$(<"$DFLASH_PATH/refs/main")"
+    fi
+    [ -n "$selected" ] && [ -f "$selected/model.safetensors" ] && have=1
+    if [ "${have:-0}" -ge 1 ] && [ "${REFRESH_WEIGHTS:-0}" != "1" ]; then
+        log "DFlash2 already present: $DFLASH_PATH"
         ensure_dflash_refs_main
         return
     fi
     resolve_hf_bin || die "no 'hf' / 'huggingface-cli' on PATH and no python huggingface_hub — pip install --user -U 'huggingface_hub[cli]' (or set HF_BIN=/path/to/hf)"
     mkdir -p "$HF_CACHE_DIR"
     log "downloading ${DFLASH_MODEL} (~2.3 GiB) into ${HF_CACHE_DIR} ..."
-    HF_HOME="$HF_CACHE_DIR" "${HF_BIN_CMD[@]}" download "$DFLASH_MODEL" --revision "$DFLASH_REVISION"
-    ensure_dflash_refs_main
-    [ -f "$pinned_dir/config.json" ] && [ -f "$pinned_dir/model.safetensors" ] \
-        || die "DFlash2 download finished without complete pinned revision $DFLASH_REVISION"
-    log "DFlash2 pinned revision download complete: $DFLASH_REVISION"
+    local -a dflash_args=("$DFLASH_MODEL")
+    [ -n "${DFLASH_REVISION:-}" ] && dflash_args+=(--revision "$DFLASH_REVISION")
+    HF_HOME="$HF_CACHE_DIR" "${HF_BIN_CMD[@]}" download "${dflash_args[@]}"
+    resolve_dflash_dir >/dev/null
+    log "DFlash2 download complete"
 }
 
 # Head-only Hub fetch. No docker, no SSH, no worker rsync.
@@ -1057,19 +1058,23 @@ download_only() {
 # (issue #22, item 2). FORCE_SYNC=1 bypasses the marker; deleting the
 # marker file on the worker has the same effect.
 sync_repo_marker_rev() {
-    local src="$1"
+    local src="$1" preferred="${2:-}"
     local rev
-    rev="$(cat "$src/refs/main" 2>/dev/null || true)"
+    if [ -n "$preferred" ] && [ -d "$src/snapshots/$preferred" ]; then
+        rev="$preferred"
+    else
+        rev="$(cat "$src/refs/main" 2>/dev/null || true)"
+    fi
     [ -n "$rev" ] || rev="$(ls -1t "$src/snapshots" 2>/dev/null | head -n 1 || true)"
     [ -n "$rev" ] || rev="unknown"
     printf '%s' "$rev"
 }
 
 sync_repo_to_worker() {
-    local src="$1" cache_name="$2" label="$3"
+    local src="$1" cache_name="$2" label="$3" preferred="${4:-}"
     local marker rev
     marker="${WORKER_CACHE_DIR}/hub/${cache_name}/.glm53-exl3-synced"
-    rev="$(sync_repo_marker_rev "$src")"
+    rev="$(sync_repo_marker_rev "$src" "$preferred")"
     if [ "${FORCE_SYNC:-0}" != "1" ] \
        && [ "$(worker_ssh "cat '$marker' 2>/dev/null" || true)" = "$rev" ]; then
         log "worker ${cache_name} already at ${rev} — rsync skipped (FORCE_SYNC=1 to force)"
@@ -1077,10 +1082,7 @@ sync_repo_to_worker() {
     fi
     log "syncing ${label} to worker (first run moves ~164 GiB over the p2p link) ..."
     worker_ssh "mkdir -p '${WORKER_CACHE_DIR}/hub/${cache_name}'"
-    # Hugging Face's trees/ directory is local cache bookkeeping, not a
-    # runtime model artifact. Exclude it so host-private metadata cannot block
-    # an otherwise complete immutable snapshots/blobs/refs transfer.
-    rsync -a --partial --info=progress2 --exclude='/trees/' \
+    rsync -a --partial --info=progress2 \
         "$src/" "${WORKER_SSH}:${WORKER_CACHE_DIR}/hub/${cache_name}/"
     worker_ssh "printf '%s' '$rev' > '$marker'"
 }
@@ -1091,7 +1093,7 @@ sync_weights() {
     sync_repo_to_worker "$MODEL_PATH" "$MODEL_CACHE_NAME" "weights"
     if [ "$SPEC_METHOD" = "dflash" ]; then
         [ -d "$DFLASH_PATH" ] || die "DFlash2 weights missing at $DFLASH_PATH"
-        sync_repo_to_worker "$DFLASH_PATH" "$DFLASH_CACHE_NAME" "DFlash2 draft"
+        sync_repo_to_worker "$DFLASH_PATH" "$DFLASH_CACHE_NAME" "DFlash2 draft" "$DFLASH_REVISION"
     fi
     log "worker weights in sync"
 }
@@ -1116,6 +1118,8 @@ GLM53_OVERLAY_ORDER=(
     patch_xgrammar_termination.py
     patch_kpool_tail_slotmap.py
     patch_spinwait.py
+    patch_adaptive_k.py
+    patch_dense_fp8.py
     patch_indexer_workspace.py
     patch_ablit.py
 )
@@ -1157,7 +1161,11 @@ ARGS=(
 [ -n "${GPU_MEM_UTIL:-}" ]  && ARGS+=(--gpu-memory-utilization "${GPU_MEM_UTIL}")
 [ -n "${MAX_NUM_SEQS:-}" ] && ARGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
 [ -n "${MAX_NUM_BATCHED_TOKENS:-}" ] && ARGS+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
+[ -n "${LONG_PREFILL_TOKEN_THRESHOLD:-}" ] && ARGS+=(--long-prefill-token-threshold "${LONG_PREFILL_TOKEN_THRESHOLD}")
 [ -n "${KV_CACHE_DTYPE:-}" ] && ARGS+=(--kv-cache-dtype "${KV_CACHE_DTYPE}")
+if [ -n "${GLM53_DEFAULT_REASONING_EFFORT:-}" ]; then
+    ARGS+=(--default-chat-template-kwargs "{\"reasoning_effort\":\"${GLM53_DEFAULT_REASONING_EFFORT}\"}")
+fi
 if [ "${SPEC_METHOD:-mtp}" = "dflash" ]; then
     ARGS+=(--speculative-config "$(python3 -S -c 'import json,os
 spec={"method":"dflash","model":os.environ["DFLASH_MODEL_DIR"],"num_speculative_tokens":int(os.environ.get("DFLASH_TOKENS","7")),"kv_cache_dtype":"auto","draft_sample_method":"probabilistic","rejection_sample_method":"standard"}
@@ -1228,7 +1236,11 @@ ARGS=(
 [ -n "${GPU_MEM_UTIL:-}" ]  && ARGS+=(--gpu-memory-utilization "${GPU_MEM_UTIL}")
 [ -n "${MAX_NUM_SEQS:-}" ] && ARGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
 [ -n "${MAX_NUM_BATCHED_TOKENS:-}" ] && ARGS+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
+[ -n "${LONG_PREFILL_TOKEN_THRESHOLD:-}" ] && ARGS+=(--long-prefill-token-threshold "${LONG_PREFILL_TOKEN_THRESHOLD}")
 [ -n "${KV_CACHE_DTYPE:-}" ] && ARGS+=(--kv-cache-dtype "${KV_CACHE_DTYPE}")
+if [ -n "${GLM53_DEFAULT_REASONING_EFFORT:-}" ]; then
+    ARGS+=(--default-chat-template-kwargs "{\"reasoning_effort\":\"${GLM53_DEFAULT_REASONING_EFFORT}\"}")
+fi
 if [ "${SPEC_METHOD:-mtp}" = "dflash" ]; then
     ARGS+=(--speculative-config "$(python3 -S -c 'import json,os
 spec={"method":"dflash","model":os.environ["DFLASH_MODEL_DIR"],"num_speculative_tokens":int(os.environ.get("DFLASH_TOKENS","7")),"kv_cache_dtype":"auto","draft_sample_method":"probabilistic","rejection_sample_method":"standard"}
@@ -1290,8 +1302,8 @@ launch_cluster() {
     [ -f "$DRAFTER_PATCH_HOST" ] || die "missing $DRAFTER_PATCH_HOST"
     scp -q -o BatchMode=yes "$DRAFTER_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_glm5_drafter_group.py"
     [ -f "$APC_PATCH_HOST" ] || die "missing $APC_PATCH_HOST"
-    [ -f "$PERGROUP_PATCH_HOST" ] || die "missing $PERGROUP_PATCH_HOST"
     scp -q -o BatchMode=yes "$APC_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_hybrid_prefix_hit.py"
+    [ -f "$PERGROUP_PATCH_HOST" ] || die "missing $PERGROUP_PATCH_HOST"
     scp -q -o BatchMode=yes "$PERGROUP_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_apc_per_group_retention.py"
     [ -f "$XGRAMMAR_PATCH_HOST" ] || die "missing $XGRAMMAR_PATCH_HOST"
     scp -q -o BatchMode=yes "$XGRAMMAR_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_xgrammar_termination.py"
@@ -1299,6 +1311,11 @@ launch_cluster() {
     scp -q -o BatchMode=yes "$KPOOL_TAIL_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_kpool_tail_slotmap.py"
     [ -f "$SPINWAIT_PATCH_HOST" ] || die "missing $SPINWAIT_PATCH_HOST"
     scp -q -o BatchMode=yes "$SPINWAIT_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_spinwait.py"
+    [ -f "$ADAPTIVE_K_PATCH_HOST" ] || die "missing $ADAPTIVE_K_PATCH_HOST"
+    scp -q -o BatchMode=yes "$ADAPTIVE_K_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_adaptive_k.py"
+    [ -f "$DENSE_FP8_PATCH_HOST" ] || die "missing $DENSE_FP8_PATCH_HOST"
+    scp -q -o BatchMode=yes "$DENSE_FP8_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_dense_fp8.py"
+    scp -q -o BatchMode=yes "$EXL3_OVERLAY_HOST" "${WORKER_SSH}:/tmp/glm53-exl3.py"
 
     worker_ssh "rm -rf /tmp/glm53-ablit"
     scp -q -r -o BatchMode=yes "$SCRIPT_DIR/ablit" "${WORKER_SSH}:/tmp/glm53-ablit"
@@ -1322,6 +1339,7 @@ launch_cluster() {
         -e VLLM_CACHE_ROOT=/root/.cache/vllm
         -e "GLM53_SUPPRESS_STOPS_IN_REASONING=$GLM53_SUPPRESS_STOPS_IN_REASONING"
         -e "GLM53_MIXED_PREFILL_CHUNK=$GLM53_MIXED_PREFILL_CHUNK"
+        -e "GLM53_DEFAULT_REASONING_EFFORT=${GLM53_DEFAULT_REASONING_EFFORT-}"
         -e "GLM53_INDEXER_WORKSPACE=$GLM53_INDEXER_WORKSPACE"
         -e "GLM53_SPINWAIT_MS=$GLM53_SPINWAIT_MS"
         -e "TRITON_CACHE_DIR=$TRITON_CACHE_DIR"
@@ -1377,19 +1395,18 @@ launch_cluster() {
     local v
     for v in SERVED_MODEL_NAME PORT TP NNODES HEAD_IP MASTER_PORT QUANTIZATION \
              MAX_MODEL_LEN GPU_MEM_UTIL MAX_NUM_SEQS MAX_NUM_BATCHED_TOKENS \
+             LONG_PREFILL_TOKEN_THRESHOLD \
              KV_CACHE_DTYPE MTP_TOKENS SPEC_METHOD DFLASH_TOKENS DFLASH_MODEL_DIR \
              DFLASH_DRAFT_TP \
              LANGUAGE_MODEL_ONLY SKIP_MM_PROFILING \
              LIMIT_MM CHAT_TEMPLATE ENFORCE_EAGER EXL3_FUSED_MOE EXL3_MOE_ROW_TILE EXL3_TEMP_ROWS_FUSED EXL3_FAT_SORTED EXL3_FAT_BATCHED EXL3_FAT_KERNEL EXL3_FAT_GROUPED MODEL_DIR EXTRA_ARGS \
-             ABLIT ABLIT_METHOD ABLIT_DIRECTION ABLIT_LAYERS ABLIT_ALPHA ABLIT_INCLUDE_MTP; do
+             ABLIT ABLIT_METHOD ABLIT_DIRECTION ABLIT_LAYERS ABLIT_ALPHA ABLIT_INCLUDE_MTP \
+             GLM53_ADAPTIVE_K GLM53_ADAPTIVE_K_SET GLM53_ADAPTIVE_K_ALPHA GLM53_ADAPTIVE_K_MARGIN \
+             GLM53_ADAPTIVE_K_MIN_STEPS GLM53_ADAPTIVE_K_SATURATE GLM53_ADAPTIVE_K_HIST GLM53_DENSE_FP8; do
         serve_env+=" -e $v='${!v:-}'"
     done
-    # VLLM_API_KEY is read by the head (rank 0) API server for bearer auth; the
-    # worker runs --headless so it only needs the var for argv-parity, and
-    # start.sh below passes it explicitly on the head. Keep it out of the
-    # generic loop so the key never shows in process listings of either node
-    # beyond the container env (same as the DeepSeek deployment).
-    serve_env+=" -e VLLM_API_KEY='${VLLM_API_KEY:-}'"
+    # The worker is headless and serves no API, so do not propagate the API
+    # credential into its remote docker command or container environment.
 
     log "starting worker on ${WORKER_SSH} (NCCL if=${WORKER_CX7_IF} hca=${WORKER_CX7_IB}) ..."
     worker_ssh "docker run -d --restart no --name '$CONTAINER_WORKER' \
@@ -1416,6 +1433,9 @@ launch_cluster() {
         -v '/tmp/patch_xgrammar_termination.py:/opt/glm53/patch_xgrammar_termination.py:ro' \
         -v '/tmp/patch_kpool_tail_slotmap.py:/opt/glm53/patch_kpool_tail_slotmap.py:ro' \
         -v '/tmp/patch_spinwait.py:/opt/glm53/patch_spinwait.py:ro' \
+        -v '/tmp/patch_adaptive_k.py:/opt/glm53/patch_adaptive_k.py:ro' \
+        -v '/tmp/patch_dense_fp8.py:/opt/glm53/patch_dense_fp8.py:ro' \
+        -v '/tmp/glm53-exl3.py:/opt/glm53/exl3.py:ro' \
         -v '/tmp/glm53-ablit:/opt/glm53/ablit:ro' \
         -v '/tmp/glm53-ablit_runtime.py:/opt/glm53/ablit_runtime.py:ro' \
         -v '/tmp/patch_ablit.py:/opt/glm53/patch_ablit.py:ro' \
@@ -1430,7 +1450,7 @@ launch_cluster() {
         --entrypoint bash '$IMAGE' /start.sh" >/dev/null
 
     log "starting head (vLLM API :${PORT}; NCCL if=${HEAD_CX7_IF} hca=${HEAD_CX7_IB}) ..."
-    docker run -d --restart no --name "$CONTAINER_HEAD" \
+    VLLM_API_KEY="$VLLM_API_KEY" docker run -d --restart no --name "$CONTAINER_HEAD" \
         --label "spark-serve.model=$SERVED_MODEL_NAME" \
         --label spark-serve.rank=head \
         --label spark-serve.lifecycle-owner=spark-a \
@@ -1454,6 +1474,9 @@ launch_cluster() {
         -v "$XGRAMMAR_PATCH_HOST:/opt/glm53/patch_xgrammar_termination.py:ro" \
         -v "$KPOOL_TAIL_PATCH_HOST:/opt/glm53/patch_kpool_tail_slotmap.py:ro" \
         -v "$SPINWAIT_PATCH_HOST:/opt/glm53/patch_spinwait.py:ro" \
+        -v "$ADAPTIVE_K_PATCH_HOST:/opt/glm53/patch_adaptive_k.py:ro" \
+        -v "$DENSE_FP8_PATCH_HOST:/opt/glm53/patch_dense_fp8.py:ro" \
+        -v "$EXL3_OVERLAY_HOST:/opt/glm53/exl3.py:ro" \
         -v "$SCRIPT_DIR/ablit:/opt/glm53/ablit:ro" \
         -v "$SCRIPT_DIR/overlay/ablit_runtime.py:/opt/glm53/ablit_runtime.py:ro" \
         -v "$SCRIPT_DIR/overlay/patch_ablit.py:/opt/glm53/patch_ablit.py:ro" \
@@ -1471,6 +1494,7 @@ launch_cluster() {
         -e MAX_MODEL_LEN="$MAX_MODEL_LEN" -e GPU_MEM_UTIL="$GPU_MEM_UTIL" \
         -e MAX_NUM_SEQS="$MAX_NUM_SEQS" \
         -e MAX_NUM_BATCHED_TOKENS="$MAX_NUM_BATCHED_TOKENS" \
+        -e LONG_PREFILL_TOKEN_THRESHOLD="${LONG_PREFILL_TOKEN_THRESHOLD:-}" \
         -e KV_CACHE_DTYPE="$KV_CACHE_DTYPE" -e MTP_TOKENS="$MTP_TOKENS" \
         -e SPEC_METHOD="$SPEC_METHOD" \
         -e DFLASH_TOKENS="${DFLASH_TOKENS:-7}" \
@@ -1494,8 +1518,16 @@ launch_cluster() {
         -e ABLIT_LAYERS="$ABLIT_LAYERS" \
         -e ABLIT_ALPHA="$ABLIT_ALPHA" \
         -e ABLIT_INCLUDE_MTP="$ABLIT_INCLUDE_MTP" \
+        -e GLM53_ADAPTIVE_K="$GLM53_ADAPTIVE_K" \
+        -e GLM53_ADAPTIVE_K_SET="$GLM53_ADAPTIVE_K_SET" \
+        -e GLM53_ADAPTIVE_K_ALPHA="$GLM53_ADAPTIVE_K_ALPHA" \
+        -e GLM53_ADAPTIVE_K_MARGIN="$GLM53_ADAPTIVE_K_MARGIN" \
+        -e GLM53_ADAPTIVE_K_MIN_STEPS="$GLM53_ADAPTIVE_K_MIN_STEPS" \
+        -e GLM53_ADAPTIVE_K_SATURATE="$GLM53_ADAPTIVE_K_SATURATE" \
+        -e GLM53_ADAPTIVE_K_HIST="$GLM53_ADAPTIVE_K_HIST" \
+        -e GLM53_DENSE_FP8="$GLM53_DENSE_FP8" \
         -e MODEL_DIR="$MODEL_DIR" \
-        -e VLLM_API_KEY="$VLLM_API_KEY" \
+        -e VLLM_API_KEY \
         -e EXTRA_ARGS="${EXTRA_ARGS:-}" \
         --entrypoint bash "$IMAGE" /start.sh >/dev/null
 
@@ -1693,9 +1725,6 @@ logs() {
 # ------------------------------- main --------------------------------------
 main() {
     local cmd="${1:-start}"
-    case "$cmd" in
-        start|restart|download) validate_dflash_revision ;;
-    esac
     case "$cmd" in
         start|restart) validate_numeric_config; validate_overlay_artifacts ;;
     esac

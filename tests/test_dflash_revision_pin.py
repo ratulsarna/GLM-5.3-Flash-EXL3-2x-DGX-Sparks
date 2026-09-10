@@ -1,248 +1,142 @@
 #!/usr/bin/env python3
-"""Functional regression for the launcher's immutable DFlash revision pin."""
+"""Host regressions for drafter revision selection and download."""
 
 from __future__ import annotations
 
 import os
-import shutil
-import stat
+import re
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
+START = ROOT / "start.sh"
+
 PIN = "dc77ff1c99eeb2df044ee3d4f0094eb033fee410"
-STALE = "1111111111111111111111111111111111111111"
-MODEL = "incoai/GLM-5.3-Flash-DFlash2"
-CACHE_NAME = "models--incoai--GLM-5.3-Flash-DFlash2"
 
 
-def _launcher(tmp: Path) -> Path:
-    script = tmp / "start.fn.sh"
-    source = (ROOT / "start.sh").read_text()
-    assert source.rstrip().endswith('main "$@"')
-    script.write_text(source.rstrip()[: -len('main "$@"')] + '"$@"\n')
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    (tmp / ".env").write_text("")
-    return script
+def source() -> str:
+    return START.read_text(encoding="utf-8")
 
 
-def _env(tmp: Path, **extra: str) -> dict[str, str]:
-    blocked = {
-        "DFLASH_MODEL",
-        "DFLASH_REVISION",
-        "HF_BIN",
-        "HF_HOME",
-        "REFRESH_WEIGHTS",
-        "SKIP_DOWNLOAD",
-        "SPEC_METHOD",
-    }
-    env = {key: value for key, value in os.environ.items() if key not in blocked}
-    env.update(
-        HOME=str(tmp / "home"),
-        HF_HOME=str(tmp / "hf"),
-        DFLASH_MODEL=MODEL,
-        DFLASH_REVISION=PIN,
-        SPEC_METHOD="dflash",
-    )
-    env.update(extra)
-    return env
+def function(name: str) -> str:
+    text = source()
+    match = re.search(rf"(?ms)^{re.escape(name)}\(\) \{{\n.*?^\}}\n", text)
+    assert match, f"missing function {name}"
+    return match.group(0)
 
 
-def _snapshot(cache: Path, revision: str) -> Path:
-    path = cache / "snapshots" / revision
-    path.mkdir(parents=True, exist_ok=True)
-    (path / "config.json").write_text("{}\n")
-    (path / "model.safetensors").write_bytes(b"test")
-    return path
-
-
-def _run(script: Path, env: dict[str, str], function: str) -> subprocess.CompletedProcess[str]:
+def run_bash(script: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", str(script), function],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
+        ["bash", "-c", script], capture_output=True, text=True, check=False
     )
 
 
-def test_resolve_rewrites_stale_main_to_complete_pin() -> None:
-    with tempfile.TemporaryDirectory() as raw_tmp:
-        tmp = Path(raw_tmp)
-        script = _launcher(tmp)
-        cache = tmp / "hf" / "hub" / CACHE_NAME
-        _snapshot(cache, STALE)
-        _snapshot(cache, PIN)
-        ref = cache / "refs" / "main"
-        ref.parent.mkdir(parents=True)
-        ref.write_text(STALE)
-
-        result = _run(script, _env(tmp), "resolve_dflash_dir")
-
-        assert result.returncode == 0, result.stderr
-        assert ref.read_text() == PIN
-        assert result.stdout.rstrip().endswith(f"/{CACHE_NAME}/snapshots/{PIN}")
-
-
-def test_resolve_rejects_stale_cache_when_pin_is_missing() -> None:
-    with tempfile.TemporaryDirectory() as raw_tmp:
-        tmp = Path(raw_tmp)
-        script = _launcher(tmp)
-        cache = tmp / "hf" / "hub" / CACHE_NAME
-        _snapshot(cache, STALE)
-        ref = cache / "refs" / "main"
-        ref.parent.mkdir(parents=True)
-        ref.write_text(STALE)
-
-        result = _run(script, _env(tmp), "resolve_dflash_dir")
-
-        assert result.returncode == 1
-        assert f"pinned DFlash2 snapshot {PIN} is incomplete" in result.stderr
-        assert ref.read_text() == STALE
-
-
-def test_download_does_not_accept_an_unrelated_cached_snapshot() -> None:
-    with tempfile.TemporaryDirectory() as raw_tmp:
-        tmp = Path(raw_tmp)
-        script = _launcher(tmp)
-        cache = tmp / "hf" / "hub" / CACHE_NAME
-        _snapshot(cache, STALE)
-        calls = tmp / "hf-calls"
-        fake_hf = tmp / "hf-stub"
-        fake_hf.write_text(
-            """#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\\n' "$*" >>"$DFLASH_TEST_CALLS"
-model=$2
-shift 2
-revision=
-while (($#)); do
-    if [[ $1 == --revision ]]; then revision=$2; shift 2; else shift; fi
-done
-cache_name="models--${model//\\//--}"
-snapshot="$HF_HOME/hub/$cache_name/snapshots/$revision"
-mkdir -p "$snapshot"
-printf '{}\\n' >"$snapshot/config.json"
-printf test >"$snapshot/model.safetensors"
-"""
-        )
-        fake_hf.chmod(fake_hf.stat().st_mode | stat.S_IXUSR)
-        env = _env(
-            tmp,
-            HF_BIN=str(fake_hf),
-            DFLASH_TEST_CALLS=str(calls),
-        )
-
-        result = _run(script, env, "download_dflash")
-
-        assert result.returncode == 0, result.stderr
-        assert f"--revision {PIN}" in calls.read_text()
-        assert (cache / "refs" / "main").read_text() == PIN
-        assert (cache / "snapshots" / PIN / "model.safetensors").is_file()
-
-
-def test_revision_guard_accepts_only_lowercase_commit_hashes() -> None:
-    with tempfile.TemporaryDirectory() as raw_tmp:
-        tmp = Path(raw_tmp)
-        script = _launcher(tmp)
-
-        valid = _run(script, _env(tmp), "validate_dflash_revision")
-        assert valid.returncode == 0, valid.stderr
-
-        for revision in (
-            "main",
-            "v1.0",
-            "A" * 40,
-            "a" * 39,
-            "a" * 41,
-            "g" * 40,
+def test_revision_override_and_empty_value_survive_env() -> None:
+    preamble = source().split('DFLASH_TOKENS=')[0]
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "start.sh"
+        script.write_text(preamble + '\nprintf "[%s]" "$DFLASH_REVISION"\n')
+        env_file = Path(tmp) / ".env"
+        env = {"PATH": os.environ["PATH"], "HOME": tmp, "USER": "fixture"}
+        for configured, caller, expected in (
+            ("", None, PIN),
+            (f"DFLASH_REVISION={PIN}\n", "override", "override"),
+            (f"DFLASH_REVISION={PIN}\n", "", ""),
+            ("DFLASH_REVISION=\n", None, ""),
         ):
-            rejected = _run(
-                script,
-                _env(tmp, DFLASH_REVISION=revision),
-                "validate_dflash_revision",
+            env_file.write_text(configured)
+            current = env.copy()
+            if caller is not None:
+                current["DFLASH_REVISION"] = caller
+            result = subprocess.run(
+                ["bash", str(script)], capture_output=True, text=True, env=current
             )
-            assert rejected.returncode == 2
-            assert "must be a lowercase 40-hex commit" in rejected.stderr
+            assert result.returncode == 0, result.stderr
+            assert result.stdout == f"[{expected}]", result.stdout
 
 
-def test_restart_rejects_tag_before_stop_or_download() -> None:
-    with tempfile.TemporaryDirectory() as raw_tmp:
-        tmp = Path(raw_tmp)
-        script = _launcher(tmp)
-        calls = tmp / "mutation-calls"
-        fake_bin = tmp / "bin"
-        fake_bin.mkdir()
-        for command in ("docker", "ssh"):
-            stub = fake_bin / command
-            stub.write_text(
-                "#!/usr/bin/env bash\n"
-                'printf "%s\\n" "$0 $*" >>"$DFLASH_TEST_CALLS"\n'
-                "exit 99\n"
-            )
-            stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-        env = _env(
-            tmp,
-            DFLASH_REVISION="main",
-            DFLASH_TEST_CALLS=str(calls),
-            PATH=f"{fake_bin}:{os.environ['PATH']}",
-        )
+def test_resolution_and_sync_marker_ignore_stale_main() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp)
+        (repo / "refs").mkdir()
+        (repo / "refs" / "main").write_text("old")
+        for revision in ("old", PIN):
+            snapshot = repo / "snapshots" / revision
+            snapshot.mkdir(parents=True)
+            (snapshot / "config.json").touch()
+            (snapshot / "model.safetensors").touch()
+        script = f"""
+set -euo pipefail
+log() {{ :; }}
+die() {{ printf '%s\\n' "$*" >&2; exit 97; }}
+{function("ensure_dflash_refs_main")}
+{function("resolve_dflash_dir")}
+{function("sync_repo_marker_rev")}
+DFLASH_PATH={shlex.quote(tmp)}
+DFLASH_CACHE_NAME=fixture
+DFLASH_REVISION={PIN}
+resolve_dflash_dir
+printf '\\n'
+sync_repo_marker_rev "$DFLASH_PATH" "$DFLASH_REVISION"
+"""
+        result = run_bash(script)
+        assert result.returncode == 0, result.stderr
+        path, marker = result.stdout.splitlines()
+        assert path.endswith(f"/snapshots/{PIN}"), path
+        assert marker == PIN, marker
+        (repo / "snapshots" / PIN / "model.safetensors").unlink()
+        result = run_bash(script)
+        assert result.returncode == 97, result.stdout
+        (repo / "snapshots" / PIN / "config.json").unlink()
+        (repo / "snapshots" / PIN).rmdir()
+        result = run_bash(script)
+        assert result.returncode == 97, result.stdout
 
-        result = subprocess.run(
-            ["bash", str(script), "main", "restart"],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
 
-        assert result.returncode == 2
-        assert "must be a lowercase 40-hex commit" in result.stderr
-        assert not calls.exists(), "restart reached docker/ssh before validation"
-
-
-def test_download_rejects_tag_before_cache_mutation() -> None:
-    with tempfile.TemporaryDirectory() as raw_tmp:
-        tmp = Path(raw_tmp)
-        script = _launcher(tmp)
-        calls = tmp / "mutation-calls"
-        fake_bin = tmp / "bin"
-        fake_bin.mkdir()
-        for command in ("df", "hf", "huggingface-cli"):
-            stub = fake_bin / command
-            stub.write_text(
-                "#!/usr/bin/env bash\n"
-                'printf "%s\\n" "$0 $*" >>"$DFLASH_TEST_CALLS"\n'
-                "exit 99\n"
-            )
-            stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-        env = _env(
-            tmp,
-            DFLASH_REVISION="v1.0",
-            DFLASH_TEST_CALLS=str(calls),
-            PATH=f"{fake_bin}:{os.environ['PATH']}",
-        )
-
-        result = subprocess.run(
-            ["bash", str(script), "main", "download"],
-            check=False,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-
-        assert result.returncode == 2
-        assert "must be a lowercase 40-hex commit" in result.stderr
-        assert not calls.exists(), "download reached disk or Hub commands before validation"
+def test_download_and_resolution_use_the_pin() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        args_file = Path(tmp) / "hf-args"
+        script = f"""
+set -euo pipefail
+log() {{ :; }}
+die() {{ printf 'DIE:%s\\n' "$*" >&2; exit 97; }}
+{function("ensure_dflash_refs_main")}
+{function("resolve_dflash_dir")}
+{function("download_dflash")}
+resolve_hf_bin() {{ HF_BIN_CMD=(mock_hf); }}
+mock_hf() {{
+    printf '%s\\n' "$@" > "$ARGS_FILE"
+    mkdir -p "$DFLASH_PATH/snapshots/$DFLASH_REVISION"
+    touch "$DFLASH_PATH/snapshots/$DFLASH_REVISION/config.json"
+    touch "$DFLASH_PATH/snapshots/$DFLASH_REVISION/model.safetensors"
+}}
+ARGS_FILE={shlex.quote(str(args_file))}
+DFLASH_PATH={shlex.quote(str(Path(tmp) / "dflash"))}
+DFLASH_CACHE_NAME=models--incoai--DFlash
+DFLASH_MODEL=incoai/DFlash
+DFLASH_REVISION={PIN}
+HF_CACHE_DIR={shlex.quote(tmp)}
+SPEC_METHOD=dflash
+SKIP_DOWNLOAD=0
+REFRESH_WEIGHTS=0
+download_dflash
+printf 'resolved=%s\\n' "$(resolve_dflash_dir)"
+"""
+        result = run_bash(script)
+        assert result.returncode == 0, result.stderr
+        assert args_file.read_text(encoding="utf-8").splitlines() == [
+            "download",
+            "incoai/DFlash",
+            "--revision",
+            PIN,
+        ]
+        assert result.stdout.strip().endswith(f"/snapshots/{PIN}")
 
 
 if __name__ == "__main__":
-    test_resolve_rewrites_stale_main_to_complete_pin()
-    test_resolve_rejects_stale_cache_when_pin_is_missing()
-    test_download_does_not_accept_an_unrelated_cached_snapshot()
-    test_revision_guard_accepts_only_lowercase_commit_hashes()
-    test_restart_rejects_tag_before_stop_or_download()
-    test_download_rejects_tag_before_cache_mutation()
-    print("DFlash immutable revision regression OK")
+    test_resolution_and_sync_marker_ignore_stale_main()
+    test_revision_override_and_empty_value_survive_env()
+    test_download_and_resolution_use_the_pin()
+    print("dflash revision-pin guard OK")

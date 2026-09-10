@@ -46,8 +46,6 @@ P = Path(
 )
 MARK = "# [glm53-hybrid-apc]"
 DFLASH_REPLAY_MARK = "# [glm53-dflash-swa-replay-v1]"
-DFLASH_RECONCILE_MARK = "# [glm53-dflash-swa-replay-v2]"
-DFLASH_EAGLE_VERIFY_MARK = "# [glm53-dflash-eagle-verify-v3]"
 
 BASE_HELPER = '''
 def _glm53_inner_kv_spec(spec):
@@ -214,39 +212,7 @@ CONVERGE_OLD = """            if curr_hit_length >= hit_length:
                 break
 """
 
-CONVERGE_NEW = """            if curr_hit_length >= hit_length:
-                replay_safe_hit = _glm53_dflash_replay_safe_hit(  # [glm53-dflash-swa-replay-v1]
-                    curr_hit_length,
-                    max_cache_hit_length,
-                    self.dflash_swa_replay_tokens,
-                    self._cache_hit_alignment_tokens,
-                )
-                if replay_safe_hit < curr_hit_length:
-                    logger.info(
-                        "[glm53-dflash-swa-replay-v1] replay clamp hit=%d->%d "
-                        "fresh=%d required=%d alignment=%d",
-                        curr_hit_length,
-                        replay_safe_hit,
-                        max_cache_hit_length + 1 - curr_hit_length,
-                        self.dflash_swa_replay_tokens,
-                        self._cache_hit_alignment_tokens,
-                    )
-                    hit_length = replay_safe_hit
-                    # Cached drafter blocks were looked up at the larger target
-                    # hit and cannot be paired with a backed-up target state.
-                    # Discard them so the fresh replay rebuilds the complete
-                    # DFlash sliding-attention window at the new boundary.
-                    for draft_spec, draft_group_ids, _, _ in self.attention_groups:
-                        if _glm53_is_draft_swa_spec(draft_spec):
-                            for draft_group_id in draft_group_ids:
-                                hit_blocks_by_group[draft_group_id] = None
-                                hit_length_by_group[draft_group_id] = 0
-                    eagle_verified.clear()
-                    continue
-                break
-"""
-
-CONVERGE_RECONCILED = """            if curr_hit_length >= hit_length:
+CONVERGE_FINAL = """            if curr_hit_length >= hit_length:
                 # [glm53-dflash-swa-replay-v2] Reuse the current boundary when
                 # every DFlash group actually returned a complete, EAGLE-popped
                 # sliding window at exactly that reconciled target length. This
@@ -332,57 +298,6 @@ CONVERGE_RECONCILED = """            if curr_hit_length >= hit_length:
                 break
 """
 
-EAGLE_VERIFY_V2 = """                if drop_eagle_block:
-                    eagle_verified.add(idx)
-                elif _new_hit_length < curr_hit_length:
-                    # length shrunk; invalidate previous eagle verifications
-                    eagle_verified.clear()
-                if _glm53_is_draft_swa_spec(spec):  # [glm53-hybrid-apc]
-"""
-
-EAGLE_VERIFY_V3 = """                _glm53_draft_swa = _glm53_is_draft_swa_spec(spec)
-                if drop_eagle_block:
-                    # [glm53-dflash-eagle-verify-v3]
-                    # A failed DFlash lookup is an attempted EAGLE pop, not a
-                    # verified one. The convergence loop may run again after a
-                    # different group shortens the initial candidate; carrying
-                    # a failed verification into that pass would suppress the
-                    # pop and mistake an ordinary 32-block tail for valid
-                    # reconciled-boundary state.
-                    if _glm53_draft_swa and _new_hit_length < curr_hit_length:
-                        eagle_verified.discard(idx)
-                    else:
-                        eagle_verified.add(idx)
-                elif _new_hit_length < curr_hit_length:
-                    # length shrunk; invalidate previous eagle verifications
-                    eagle_verified.clear()
-                if _glm53_draft_swa:  # [glm53-hybrid-apc]
-"""
-
-RECONCILE_LOOP_V2 = """                for (
-                    draft_spec,
-                    draft_group_ids,
-                    _,
-                    draft_use_eagle,
-                ) in self.attention_groups:
-"""
-
-RECONCILE_LOOP_V3 = """                for draft_group_index, (
-                    draft_spec,
-                    draft_group_ids,
-                    _,
-                    draft_use_eagle,
-                ) in enumerate(self.attention_groups):
-"""
-
-RECONCILE_CHECK_V2 = """                            not draft_use_eagle
-                            or required_tail_blocks <= 0
-"""
-
-RECONCILE_CHECK_V3 = """                            not draft_use_eagle
-                            or draft_group_index not in eagle_verified
-                            or required_tail_blocks <= 0
-"""
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -407,8 +322,10 @@ def main() -> int:
         text = replace_once(text, LOG_OLD, LOG_NEW, "group-log")
     if DFLASH_REPLAY_MARK not in text:
         if "def _glm53_dflash_swa_replay_tokens(" not in text:
-            # Keep byte-identical composition with the per-group overlay in
-            # either order: Kpool helpers precede its retention helpers.
+            # Compose with the per-group overlay in a consistent helper order
+            # (Kpool helpers precede its retention helpers) regardless of
+            # which overlay runs first; whitespace between the blobs may
+            # differ, the AST may not.
             replay_needle = (
                 "def _glm53_swa_retention_env("
                 if "def _glm53_swa_retention_env(" in text
@@ -418,61 +335,9 @@ def main() -> int:
                 replay_needle, DFLASH_REPLAY_HELPER + replay_needle, 1
             )
         text = replace_once(text, INIT_OLD, INIT_NEW, "dflash-replay-init")
-        text = replace_once(text, CONVERGE_OLD, CONVERGE_NEW, "dflash-replay-clamp")
-    if DFLASH_RECONCILE_MARK not in text:
         text = replace_once(
-            text,
-            CONVERGE_NEW,
-            CONVERGE_RECONCILED,
-            "dflash-reconciled-boundary-reuse",
+            text, CONVERGE_OLD, CONVERGE_FINAL, "dflash-replay-clamp"
         )
-    if DFLASH_EAGLE_VERIFY_MARK not in text:
-        text = replace_once(
-            text, EAGLE_VERIFY_V2, EAGLE_VERIFY_V3, "dflash-eagle-verification"
-        )
-        reconcile_loop_v3_count = text.count(RECONCILE_LOOP_V3)
-        if reconcile_loop_v3_count == 0:
-            text = replace_once(
-                text,
-                RECONCILE_LOOP_V2,
-                RECONCILE_LOOP_V3,
-                "dflash-reconcile-index",
-            )
-        elif reconcile_loop_v3_count != 1 or RECONCILE_LOOP_V2 in text:
-            raise SystemExit(
-                f"{P}: invalid mixed/duplicate dflash-reconcile-index anchors"
-            )
-        reconcile_check_v3_count = text.count(RECONCILE_CHECK_V3)
-        if reconcile_check_v3_count == 0:
-            text = replace_once(
-                text,
-                RECONCILE_CHECK_V2,
-                RECONCILE_CHECK_V3,
-                "dflash-reconcile-verification",
-            )
-        elif reconcile_check_v3_count != 1 or RECONCILE_CHECK_V2 in text:
-            raise SystemExit(
-                f"{P}: invalid mixed/duplicate dflash-reconcile-verification anchors"
-            )
-    # Canonicalize only the two adjacent injected helper boundaries. The two
-    # overlays both insert before the upstream validator, so without this the
-    # application order can differ by one blank line despite identical code.
-    for left, right in (
-        (
-            'return type(_glm53_inner_kv_spec(spec)).__name__ == "SlidingWindowSpec"',
-            "def _glm53_dflash_swa_replay_tokens(",
-        ),
-        (
-            "return max(0, hit_length - pages * alignment_tokens)",
-            "def _glm53_swa_retention_env(",
-        ),
-    ):
-        if left in text and right in text:
-            left_end = text.index(left) + len(left)
-            right_start = text.index(right, left_end)
-            if text[left_end:right_start].strip():
-                raise SystemExit(f"{P}: unexpected code between injected helpers")
-            text = text[:left_end] + "\n\n\n" + text[right_start:]
     P.write_text(text)
     print(
         f"patched {P.name} (hybrid APC + versioned DFlash SWA replay clamp)"
