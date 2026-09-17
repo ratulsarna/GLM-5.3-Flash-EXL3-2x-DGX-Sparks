@@ -446,14 +446,14 @@ WORKER_TILELANG_CACHE="${WORKER_TILELANG_CACHE:-$WORKER_VLLM_CACHE/tilelang}"
 TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/root/.triton/cache}"
 TILELANG_CACHE_DIR="${TILELANG_CACHE_DIR:-/root/.tilelang/cache}"
 
-LOGDIR="$SCRIPT_DIR/logs"
+LOGDIR="${LOGDIR:-$SCRIPT_DIR/logs}"
 # TP2 lifecycle lock (helpers below). start/restart take it without waiting;
 # stop waits CLUSTER_LOCK_WAIT seconds and then refuses with exit 1.
 CLUSTER_LOCK="$LOGDIR/cluster.lock"
 CLUSTER_LOCK_PID="$LOGDIR/cluster.lock.pid"
 CLUSTER_LOCK_WAIT=30
-HEAD_SCRIPT="$SCRIPT_DIR/.glm53-exl3-head.inner.sh"
-WORKER_SCRIPT="$SCRIPT_DIR/.glm53-exl3-worker.inner.sh"
+HEAD_SCRIPT="${HEAD_SCRIPT:-$SCRIPT_DIR/.glm53-exl3-head.inner.sh}"
+WORKER_SCRIPT="${WORKER_SCRIPT:-$SCRIPT_DIR/.glm53-exl3-worker.inner.sh}"
 EXPECTED_SHARDS="${EXPECTED_SHARDS:-120}"
 # Under a preset the pinned inventory wins: a caller EXPECTED_SHARDS must not
 # lower the gate for one exact checkpoint.
@@ -1522,7 +1522,10 @@ sync_repo_to_worker() {
     fi
     log "syncing ${label} to worker (first run moves ~164 GiB over the p2p link) ..."
     worker_ssh "mkdir -p '${WORKER_CACHE_DIR}/hub/${cache_name}'"
-    rsync -a --partial --info=progress2 \
+    # Hugging Face's trees/ directory is local cache bookkeeping, not a
+    # runtime model artifact. Exclude it so host-private metadata cannot
+    # block an otherwise complete immutable snapshots/blobs/refs transfer.
+    rsync -a --partial --info=progress2 --exclude='/trees/' \
         "$src/" "${WORKER_SSH}:${WORKER_CACHE_DIR}/hub/${cache_name}/"
     worker_ssh "printf '%s' '$rev' > '$marker'"
 }
@@ -2008,7 +2011,12 @@ launch_cluster() {
     # credential into its remote docker command or container environment.
 
     log "starting worker on ${WORKER_SSH} (NCCL if=${WORKER_CX7_IF} hca=${WORKER_CX7_IB}) ..."
-    worker_ssh "docker run -d --name '$CONTAINER_WORKER' \
+    worker_ssh "docker run -d --restart no --name '$CONTAINER_WORKER' \
+        --label spark-serve.model='$SERVED_MODEL_NAME' \
+        --label spark-serve.rank=worker \
+        --label spark-serve.lifecycle-owner=spark-a \
+        --label spark-serve.lease-token-sha256='${SPARK_SERVE_LEASE_TOKEN_SHA256:-}' \
+        --label spark-serve.recipe-commit='${MIA_RECIPE_COMMIT:-}' \
         --gpus all --network host --ipc=host --shm-size 32g --stop-timeout 60 \
         --device /dev/infiniband --cap-add IPC_LOCK \
         --ulimit memlock=-1 --ulimit stack=67108864 \
@@ -2048,7 +2056,12 @@ launch_cluster() {
         --entrypoint bash '$IMAGE' /start.sh" >/dev/null
 
     log "starting head (vLLM API :${PORT}; NCCL if=${HEAD_CX7_IF} hca=${HEAD_CX7_IB}) ..."
-    VLLM_API_KEY="$VLLM_API_KEY" docker run -d --name "$CONTAINER_HEAD" \
+    VLLM_API_KEY="$VLLM_API_KEY" docker run -d --restart no --name "$CONTAINER_HEAD" \
+        --label "spark-serve.model=$SERVED_MODEL_NAME" \
+        --label spark-serve.rank=head \
+        --label spark-serve.lifecycle-owner=spark-a \
+        --label "spark-serve.lease-token-sha256=${SPARK_SERVE_LEASE_TOKEN_SHA256:-}" \
+        --label "spark-serve.recipe-commit=${MIA_RECIPE_COMMIT:-}" \
         --gpus all --network host --ipc=host --shm-size 32g --stop-timeout 60 \
         --device /dev/infiniband --cap-add IPC_LOCK \
         --ulimit memlock=-1 --ulimit stack=67108864 \
