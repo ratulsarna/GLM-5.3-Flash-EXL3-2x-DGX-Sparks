@@ -60,28 +60,104 @@ def attention_cache_layout(lengths, starts, logical_block):
 
 
 class PatchTests(unittest.TestCase):
-    def test_both_files_preflight_before_any_write(self):
-        with tempfile.TemporaryDirectory(dir=RECIPE) as tmp:
-            root = Path(tmp)
-            for rel in patch.EDITS:
-                (root / rel).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(SOURCE / rel, root / rel)
-            planner = root / patch.PLANNER
-            before = planner.read_bytes()
-            (root / patch.RESHAPER).write_text("unexpected source\n")
-            with self.assertRaises(ValueError):
-                patch.apply(root)
-            self.assertEqual(planner.read_bytes(), before)
+    def test_all_files_preflight_before_any_write(self):
+        for broken in patch.EDITS:
+            with self.subTest(broken=broken), tempfile.TemporaryDirectory(dir=RECIPE) as tmp:
+                root = Path(tmp)
+                for rel in patch.EDITS:
+                    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(SOURCE / rel, root / rel)
+                (root / broken).write_text("unexpected source\n")
+                before = {rel: (root / rel).read_bytes() for rel in patch.EDITS}
+                with self.assertRaises(ValueError):
+                    patch.apply(root)
+                self.assertEqual(
+                    {rel: (root / rel).read_bytes() for rel in patch.EDITS}, before)
 
     def test_partial_patch_and_duplicate_anchor_fail_closed(self):
-        source = (SOURCE / patch.PLANNER).read_text()
-        patched = patch.prepare(source, patch.PLANNER)
-        self.assertEqual(patch.prepare(patched, patch.PLANNER), patched)
+        for rel, edits in patch.EDITS.items():
+            source = (SOURCE / rel).read_text()
+            patched = patch.prepare(source, rel)
+            self.assertEqual(patch.prepare(patched, rel), patched)
+            for old, new in edits:
+                with self.subTest(file=rel, anchor=old), self.assertRaises(ValueError):
+                    patch.prepare(patched + old, rel)
+        patched = patch.prepare((SOURCE / patch.PLANNER).read_text(), patch.PLANNER)
         partial = patched.replace(patch.LAYOUT_NEW, patch.LAYOUT_OLD)
         with self.assertRaises(ValueError):
             patch.prepare(partial, patch.PLANNER)
-        with self.assertRaises(ValueError):
-            patch.prepare(source + patch.BLOCK_OLD, patch.PLANNER)
+
+
+class SchedulerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        source = patch.prepare((SOURCE / patch.SCHEDULER).read_text(), patch.SCHEDULER)
+        for name, text in (
+            ("split", source),
+            ("baseline_split", source.replace(patch.SPLIT_NEW, patch.SPLIT_OLD)),
+        ):
+            function = next(node for node in ast.walk(ast.parse(text))
+                            if isinstance(node, ast.FunctionDef)
+                            and node.name == "_mamba_block_aligned_split")
+            namespace = {}
+            exec("from __future__ import annotations\n" + ast.unparse(function), namespace)
+            setattr(cls, name, staticmethod(namespace[function.name]))
+
+    @staticmethod
+    def scheduler(block_size, budget=2048):
+        return SimpleNamespace(
+            cache_config=SimpleNamespace(block_size=block_size),
+            block_size=3584, hash_block_size=64, use_eagle=True,
+            max_num_scheduled_tokens=budget, mamba_partial_cache_hit=False,
+            scheduler_config=SimpleNamespace(long_prefill_token_threshold=0),
+        )
+
+    def test_full_prefill_chain_preserves_baseline_at_page_edges_and_232k(self):
+        cases = {
+            41: [41], 66: [66], 218: [128, 90], 895: [768, 127],
+            896: [832, 64], 897: [832, 65], 1553: [1472, 81],
+            232000: [2048] * 113 + [512, 64],
+        }
+        for length, expected in cases.items():
+            with self.subTest(length=length):
+                request = SimpleNamespace(num_computed_tokens=0,
+                    num_prompt_tokens=length, num_tokens=length, shared_prefix_boundary=0)
+                scheduler = self.scheduler(896)
+                chunks = []
+                while request.num_computed_tokens < length:
+                    count = self.split(scheduler, request,
+                        min(2048, length - request.num_computed_tokens))
+                    self.assertGreater(count, 0)
+                    chunks.append(count)
+                    request.num_computed_tokens += count
+                self.assertEqual(chunks, expected)
+                self.assertEqual(scheduler.cache_config.block_size, 896)
+                self.assertEqual(scheduler.block_size, 3584)
+
+    def test_resumed_prefill_shared_junctions_and_decode_keep_baseline_splits(self):
+        # Resumes and fair-prefill budgets can start within either page size.
+        cases = (
+            (232000, 232000, 3584, 0, 0, 2048, 0),
+            (232000, 232000, 0, 3584, 0, 2048, 0),
+            (232000, 232000, 0, 0, 3584, 2048, 0),
+            (232000, 232000, 65, 0, 0, 384, 0),
+            (232000, 232000, 896, 0, 0, 256, 0),
+            (232000, 232000, 512, 0, 0, 2048, 900),
+            (232000, 232000, 3584, 0, 0, 2048, 4500),
+            (232000, 232000, 231936, 0, 0, 64, 0),
+            (218, 305, 218, 0, 0, 86, 0),
+            (218, 305, 304, 0, 0, 8, 0),
+        )
+        for prompt, tokens, start, local, external, budget, junction in cases:
+            with self.subTest(case=(prompt, tokens, start, local, external, budget, junction)):
+                request = SimpleNamespace(num_computed_tokens=start,
+                    num_prompt_tokens=prompt, num_tokens=tokens,
+                    shared_prefix_boundary=junction)
+                expected = self.baseline_split(self.scheduler(64, budget), request,
+                                               budget, local, external)
+                actual = self.split(self.scheduler(896, budget), request,
+                                    budget, local, external)
+                self.assertEqual(actual, expected)
 
 
 class TensorTests(unittest.TestCase):
@@ -152,12 +228,13 @@ class TensorTests(unittest.TestCase):
         self.assertLessEqual(3 * sum(counts), config.num_blocks - 1)
         from vllm.v1.core.kv_cache_coordinator import HybridKVCacheCoordinator
         scheduler_config = utils.generate_scheduler_kv_cache_config([config])
-        for draft_block in (64, 512, 896):
+        for draft_block, prefix_unit in ((64, None), (512, None), (896, None), (896, 64)):
+            cfg.cache_config.prefix_match_unit = prefix_unit
             variant = deepcopy(scheduler_config)
             variant.kv_cache_groups[-1].kv_cache_spec = replace(
                 variant.kv_cache_groups[-1].kv_cache_spec, block_size=draft_block)
             scheduler_unit, hash_unit = utils.resolve_kv_cache_block_sizes(variant, cfg)
-            self.assertEqual((scheduler_unit, hash_unit), (3584, draft_block))
+            self.assertEqual((scheduler_unit, hash_unit), (3584, prefix_unit or draft_block))
             coordinator = HybridKVCacheCoordinator(
                 variant, max_model_len=232000, max_in_flight_tokens=4096,
                 use_eagle=True, enable_caching=True, enable_kv_cache_events=False,
@@ -270,7 +347,21 @@ class TensorTests(unittest.TestCase):
         self.assert_cuda_attention_against_legacy(
             (231998, 231999, 232000), window_only=True)
 
-    def assert_cuda_attention_against_legacy(self, lengths, window_only=False):
+    def test_cuda_full_prefill_chunk_matches_legacy_at_window_and_232k_edges(self):
+        if not GPU:
+            self.skipTest("root runs --gpu")
+        self.torch.cuda.reset_peak_memory_stats()
+        self.assert_cuda_attention_against_legacy(
+            (2047, 2048, 2049), requested_query_lengths=(2048,), native_only=True)
+        self.assert_cuda_attention_against_legacy(
+            (231998, 231999, 232000), window_only=True,
+            requested_query_lengths=(2048,), native_only=True)
+        print(json.dumps(dict(check="prefill2048_memory",
+            peak_allocated_bytes=self.torch.cuda.max_memory_allocated())), flush=True)
+
+    def assert_cuda_attention_against_legacy(self, lengths, window_only=False, *,
+                                           requested_query_lengths=(1, 8, 257),
+                                           native_only=False):
         if not GPU:
             self.skipTest("root runs --gpu")
         torch = self.torch
@@ -280,7 +371,7 @@ class TensorTests(unittest.TestCase):
         torch.manual_seed(1729)
         logical = GPU_LOGICAL_BLOCK
         scale = torch.tensor(1.0, device="cuda")
-        for requested_qlen in (1, 8, 257):
+        for requested_qlen in requested_query_lengths:
             query_lengths = tuple(min(requested_qlen, length) for length in lengths)
             starts = tuple(max(0, length - qlen - 2047) if window_only else 0
                            for length, qlen in zip(lengths, query_lengths))
@@ -297,6 +388,8 @@ class TensorTests(unittest.TestCase):
             legacy_output = None
             legacy_kv = None
             for manager, kernel in ((64, 64), (logical, 64), (logical, logical)):
+                if native_only and manager != kernel:
+                    continue
                 with self.subTest(lengths=lengths, queries=query_lengths,
                                   manager=manager, kernel=kernel):
                     owners, slots = attention_cache_layout(lengths, starts, manager)
@@ -369,6 +462,7 @@ class TensorTests(unittest.TestCase):
                                                rtol=rtol, atol=atol)
                     self.assertLessEqual(relative_rms, rms_limit)
                     del raw, view, k_cache, v_cache, stored_key, stored_value
+                    del actual, reference, actual_cpu, delta
 
 
 if __name__ == "__main__":

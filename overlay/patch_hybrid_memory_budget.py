@@ -10,6 +10,7 @@ from pathlib import Path
 
 PLANNER = "v1/core/kv_cache_utils.py"
 RESHAPER = "v1/worker/gpu/attn_utils.py"
+SCHEDULER = "v1/core/sched/scheduler.py"
 MARK = "[glm53-hybrid-memory-budget]"
 DRAFT_BLOCK_SIZE = 896
 
@@ -60,9 +61,17 @@ STRIDE_NEW = """        # [glm53-hybrid-memory-budget] num_blocks counts kernel 
         page_stride = page_bytes // split // dtype_size
 """
 
+SPLIT_OLD = """        block_size = self.cache_config.block_size
+        # The last block-aligned position whose state can be cached. With
+"""
+SPLIT_NEW = """        block_size = self.hash_block_size
+        # The last block-aligned position whose state can be cached. With
+"""
+
 EDITS = {
     PLANNER: ((BLOCK_OLD, BLOCK_NEW), (LAYOUT_OLD, LAYOUT_NEW)),
     RESHAPER: ((STRIDE_OLD, STRIDE_NEW),),
+    SCHEDULER: ((SPLIT_OLD, SPLIT_NEW),),
 }
 
 
