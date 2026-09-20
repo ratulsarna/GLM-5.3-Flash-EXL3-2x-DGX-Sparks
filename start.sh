@@ -169,6 +169,7 @@ USE_HOST_NCCL="${USE_HOST_NCCL:-0}"
 
 TP="${TP:-2}"
 NNODES="${NNODES:-2}"
+API_HOST="${API_HOST:-127.0.0.1}"
 PORT="${PORT:-8888}"
 MASTER_PORT="${MASTER_PORT:-29521}"
 
@@ -1629,7 +1630,7 @@ say() { echo "[glm53-exl3-head] $*"; }
 
 ARGS=(
     --served-model-name "${SERVED_MODEL_NAME}"
-    --host 127.0.0.1
+    --host "${API_HOST}"
     --port "${PORT}"
     --tensor-parallel-size "${TP}"
     --nnodes "${NNODES}"
@@ -2128,6 +2129,7 @@ launch_cluster() {
         -e NCCL_IB_HCA="$HEAD_CX7_IB" \
         -e NCCL_IB_GID_INDEX="$HEAD_GID" \
         -e VLLM_HOST_IP="$HEAD_IP" \
+        -e API_HOST="$API_HOST" \
         -e SERVED_MODEL_NAME="$SERVED_MODEL_NAME" \
         -e PORT="$PORT" -e TP="$TP" -e NNODES="$NNODES" \
         -e HEAD_IP="$HEAD_IP" -e MASTER_PORT="$MASTER_PORT" \
@@ -2186,7 +2188,7 @@ launch_cluster() {
 
 # ---------------------------- health wait ----------------------------------
 wait_for_health() {
-    local url="http://127.0.0.1:${PORT}/health"
+    local url="http://${API_HOST}:${PORT}/health"
     log "waiting for ${url} (weight load + warmup on a 320B MoE is slow; timeout ${READY_TIMEOUT}s) ..."
     log "streaming head logs live — Ctrl-C detaches, the server keeps running"
 
@@ -2267,7 +2269,7 @@ post_ready_warmup() {
     GLM53_WARMUP_TRITON_CACHE_DIR="$TRITON_HOST_CACHE" \
     GLM53_WARMUP_BEARER="${VLLM_API_KEY:-}" \
         bash "$SCRIPT_DIR/scripts/boot-shape-warmup.sh" \
-            "http://127.0.0.1:${PORT}" "$SERVED_MODEL_NAME" \
+            "http://${API_HOST}:${PORT}" "$SERVED_MODEL_NAME" \
         || warn "boot shape warmup incomplete — uncovered shapes may JIT mid-serve on TP=2"
 }
 
@@ -2280,7 +2282,7 @@ collect_failure_logs() {
 on_ready() {
     log "======================================================================"
     log "GLM-5.3-Flash EXL3 is UP (TP=${TP}, nnodes=${NNODES})"
-    log "  endpoints  : http://127.0.0.1:${PORT}/v1   (LAN: ${HEAD_IP}:${PORT})"
+    log "  endpoints  : http://${API_HOST}:${PORT}/v1"
     log "  model name : ${SERVED_MODEL_NAME}"
     log "  weights    : ${MODEL}  quant=${QUANTIZATION}  kv=${KV_CACHE_DTYPE}"
     local vision=on
@@ -2299,7 +2301,7 @@ on_ready() {
     fi
     log "  auth       : ${auth_line}"
     log "  quick test :"
-    log "    curl -s http://127.0.0.1:${PORT}/v1/chat/completions \\"
+    log "    curl -s http://${API_HOST}:${PORT}/v1/chat/completions \\"
     if [ -n "${VLLM_API_KEY:-}" ]; then
         log "      -H 'Authorization: Bearer <KEY>' \\"
     fi
@@ -2378,8 +2380,8 @@ stop() {
 status() {
     log "head (${CONTAINER_HEAD} on $(hostname)):"
     docker ps -a --filter "name=${CONTAINER_HEAD}" --format '  {{.Names}}  {{.Status}}' || true
-    if curl -fsS -m 5 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-        log "  API: healthy — http://127.0.0.1:${PORT}/v1"
+    if curl -fsS -m 5 "http://${API_HOST}:${PORT}/health" >/dev/null 2>&1; then
+        log "  API: healthy — http://${API_HOST}:${PORT}/v1"
     else
         log "  API: not responding"
     fi
