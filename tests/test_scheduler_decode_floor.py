@@ -396,32 +396,30 @@ class FairTests(unittest.TestCase):
         self.p.credit = 0.05
         self.assertEqual(self.p.cap_for(self.s, self.b), 20)
 
-    def running_loop(self, input_budget, allocate=None):
+    def running_loop(self, input_budget, allocate=None, running=None, draft_slots=8):
         if PATCHED_SOURCE is None:
             self.skipTest('source installation required')
-        # Execute the pinned scheduler's actual running-loop budget/eligibility
-        # code, omitting only KV allocation and post-allocation speculative setup.
+        # Keep eligibility, alignment and draft slicing from the installed source.
         tree = ast.parse(PATCHED_SOURCE)
         schedule = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == 'schedule')
         loop = next(n for n in schedule.body if isinstance(n, ast.While))
         allocate_index = next(i for i, n in enumerate(loop.body) if isinstance(n, ast.With))
         append_index = next(i for i, n in enumerate(loop.body) if isinstance(n, ast.Expr)
                             and ast.unparse(n).startswith('scheduled_running_reqs.append'))
-        increment_index = next(i for i in range(append_index, len(loop.body))
-                               if ast.unparse(loop.body[i]) == 'req_index += 1')
-        loop.body = (loop.body[:allocate_index] + loop.body[append_index:increment_index + 1]
-                     if allocate is None else loop.body[:increment_index + 1])
+        if allocate is None:
+            loop.body = loop.body[:allocate_index] + loop.body[append_index:]
         code = compile(ast.fix_missing_locations(ast.Module(body=[loop], type_ignores=[])), '<actual-running-loop>', 'exec')
-        self.s.running, self.s.waiting = [self.b, self.a], []
+        self.s.running, self.s.waiting = list(running) if running is not None else [self.b, self.a], []
         self.s.refresh()
         self.s.kv_cache_manager = SimpleNamespace(allocate_slots=allocate)
         self.s.num_lookahead_tokens = 7
         self.p.begin_step(self.s)
         ns = dict(self=self.s, _GLM53_MIXED=self.p,
                   _glm53_mixed_prefill_policy=lambda s, r: self.p.cap_for(s, r),
-                  req_index=0, token_budget=7168, input_budget=input_budget, draft_slots=8,
+                  req_index=0, token_budget=input_budget, input_budget=input_budget, draft_slots=draft_slots,
                   defer_prefills=False, encoder_compute_budget=0, prefill_scheduled=False,
                   scheduled_running_reqs=[], req_to_new_blocks={}, num_scheduled_tokens={}, new_blocks=[],
+                  scheduled_spec_decode_tokens={}, scheduled_encoder_inputs={},
                   record_function_or_nullcontext=lambda _: contextlib.nullcontext())
         exec(code, ns)
         return ns
@@ -444,6 +442,51 @@ class FairTests(unittest.TestCase):
         ns = self.running_loop(264)
         self.assertEqual(ns['num_scheduled_tokens'], {'B': 256})
         self.assertEqual(ns['input_budget'], 0)
+
+    def test_long_prefill_keeps_async_draft_rows_and_mamba_boundaries(self):
+        tree = ast.parse(PATCHED_SOURCE)
+        align = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
+                     and n.name == '_mamba_block_aligned_split')
+        ns = {}
+        exec(compile(ast.fix_missing_locations(ast.Module(
+            body=[align], type_ignores=[])), '<actual-mamba-alignment>', 'exec'),
+            {'Request': Req}, ns)
+        self.s._mamba_block_aligned_split = ns[align.name].__get__(self.s)
+        self.s.need_mamba_block_aligned_split = True
+        self.s.cache_config = SimpleNamespace(block_size=3584)
+        self.s.hash_block_size = 64
+        self.s.max_model_len = 232000
+        self.s.mamba_partial_cache_hit = False
+        self.s.use_eagle = True
+        for budget in (2048, 4096):
+            for drafts in (2, 4, 7):
+                for start in (0, 3584 - 64, 228000):
+                    with self.subTest(budget=budget, drafts=drafts, start=start):
+                        self.p = self.policy(GLM53_FAIR_PREFILL_MAX_STEP_MS='2000')
+                        self.kit_samples()
+                        self.s.current_step += 1
+                        self.s.max_num_scheduled_tokens = budget
+                        pref = Req('B', 231000, start)
+                        pref.shared_prefix_boundary = 0
+                        decoders = [Req(rid, 230000, 230008, decode=True)
+                                    for rid in ('A', 'C')]
+                        for r in decoders:
+                            r.num_output_placeholders = 8
+                            r.spec_token_ids = list(range(drafts))
+                        out = self.running_loop(budget, running=[pref, *decoders], draft_slots=7)
+                        counts = out['num_scheduled_tokens']
+                        self.assertGreater(counts['B'], 0)
+                        self.assertEqual([r.request_id for r in self.s.running], ['A', 'C', 'B'])
+                        for r in decoders:
+                            self.assertEqual(counts[r.request_id], drafts + 1)
+                            self.assertEqual(out['scheduled_spec_decode_tokens'][r.request_id], list(range(drafts)))
+                        self.assertGreaterEqual(out['input_budget'], 0)
+                        if start == 3584 - 64:
+                            self.assertEqual(counts['B'], 64)
+                        self.p.finish_step(self.s, Out(counts))
+                        record = next(iter(self.p.inflight.values()))
+                        self.assertEqual(record['prefill_tokens'], {'B': counts['B']})
+                        self.assertTrue(record['had_decode'])
 
 
 def installation_tests():
