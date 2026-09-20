@@ -67,11 +67,32 @@ SPLIT_OLD = """        block_size = self.cache_config.block_size
 SPLIT_NEW = """        block_size = self.hash_block_size
         # The last block-aligned position whose state can be cached. With
 """
+MAMBA_IMPORT_OLD = "from vllm.v1.kv_cache_interface import KVCacheConfig\n"
+MAMBA_IMPORT_NEW = "from vllm.v1.kv_cache_interface import KVCacheConfig, MambaSpec\n"
+MAMBA_SIZES_OLD = """        self.has_mamba_layers = kv_cache_config.has_mamba_layers
+"""
+MAMBA_SIZES_NEW = """        self.mamba_block_sizes = sorted({
+            group.kv_cache_spec.block_size
+            for group in kv_cache_config.kv_cache_groups
+            if isinstance(group.kv_cache_spec, MambaSpec)
+        })
+        self.has_mamba_layers = bool(self.mamba_block_sizes)
+"""
+STOPS_OLD = """        stops = (
+            # Same invariant: a chunk starting mid-block stops at the boundary
+"""
+STOPS_NEW = """        stops = (
+            # KDA stores only chunk-final state; materialize every Mamba boundary.
+            min((start // size + 1) * size for size in self.mamba_block_sizes),
+            # Same invariant: a chunk starting mid-block stops at the boundary
+"""
 
 EDITS = {
     PLANNER: ((BLOCK_OLD, BLOCK_NEW), (LAYOUT_OLD, LAYOUT_NEW)),
     RESHAPER: ((STRIDE_OLD, STRIDE_NEW),),
-    SCHEDULER: ((SPLIT_OLD, SPLIT_NEW),),
+    SCHEDULER: ((MAMBA_IMPORT_OLD, MAMBA_IMPORT_NEW),
+                (MAMBA_SIZES_OLD, MAMBA_SIZES_NEW),
+                (SPLIT_OLD, SPLIT_NEW), (STOPS_OLD, STOPS_NEW)),
 }
 
 

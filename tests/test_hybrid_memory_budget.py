@@ -94,7 +94,8 @@ class SchedulerTests(unittest.TestCase):
         source = patch.prepare((SOURCE / patch.SCHEDULER).read_text(), patch.SCHEDULER)
         for name, text in (
             ("split", source),
-            ("baseline_split", source.replace(patch.SPLIT_NEW, patch.SPLIT_OLD)),
+            ("baseline_split", source.replace(patch.STOPS_NEW, patch.STOPS_OLD)
+                                     .replace(patch.SPLIT_NEW, patch.SPLIT_OLD)),
         ):
             function = next(node for node in ast.walk(ast.parse(text))
                             if isinstance(node, ast.FunctionDef)
@@ -102,21 +103,28 @@ class SchedulerTests(unittest.TestCase):
             namespace = {}
             exec("from __future__ import annotations\n" + ast.unparse(function), namespace)
             setattr(cls, name, staticmethod(namespace[function.name]))
+        assignments = [node for node in ast.walk(ast.parse(source))
+                       if isinstance(node, ast.Assign)
+                       and isinstance(node.targets[0], ast.Attribute)
+                       and node.targets[0].attr in ("mamba_block_sizes", "has_mamba_layers")]
+        cls.mamba_setup = compile("from __future__ import annotations\n" + ast.unparse(
+            ast.Module(body=assignments, type_ignores=[])), patch.SCHEDULER, "exec")
 
     @staticmethod
     def scheduler(block_size, budget=2048):
         return SimpleNamespace(
             cache_config=SimpleNamespace(block_size=block_size),
             block_size=3584, hash_block_size=64, use_eagle=True,
+            mamba_block_sizes=[3584],
             max_num_scheduled_tokens=budget, mamba_partial_cache_hit=False,
             scheduler_config=SimpleNamespace(long_prefill_token_threshold=0),
         )
 
-    def test_full_prefill_chain_preserves_baseline_at_page_edges_and_232k(self):
+    def test_short_prefills_and_232k_checkpoint_stops(self):
         cases = {
             41: [41], 66: [66], 218: [128, 90], 895: [768, 127],
             896: [832, 64], 897: [832, 65], 1553: [1472, 81],
-            232000: [2048] * 113 + [512, 64],
+            232000: [2048, 1536] * 64 + [2048, 512, 64],
         }
         for length, expected in cases.items():
             with self.subTest(length=length):
@@ -158,6 +166,51 @@ class SchedulerTests(unittest.TestCase):
                 actual = self.split(self.scheduler(896, budget), request,
                                     budget, local, external)
                 self.assertEqual(actual, expected)
+
+    def test_actual_mamba_groups_define_boundaries_independently_of_scalar_and_lcm(self):
+        class MambaSpec:
+            def __init__(self, size):
+                self.block_size = size
+
+        scheduler = self.scheduler(896)
+        scheduler.cache_config.mamba_block_size = 64
+        scheduler.block_size = 10752
+        groups = [SimpleNamespace(kv_cache_spec=spec) for spec in
+                  (MambaSpec(3584), MambaSpec(768), MambaSpec(3584),
+                   SimpleNamespace(block_size=4))]
+        exec(self.mamba_setup, dict(self=scheduler, MambaSpec=MambaSpec,
+                                  kv_cache_config=SimpleNamespace(kv_cache_groups=groups)))
+        self.assertEqual(scheduler.mamba_block_sizes, [768, 3584])
+        request = SimpleNamespace(num_computed_tokens=1984, num_prompt_tokens=232000,
+                                  num_tokens=232000, shared_prefix_boundary=0)
+        self.assertEqual(self.split(scheduler, request, 2041), 320)
+        self.assertTrue(scheduler.has_mamba_layers)
+
+    def test_checkpoint_stops_survive_resumes_fair_caps_and_speculative_decode(self):
+        cases = (
+            # start, local hit, external hit, input budget, fair cap, expected
+            (55552, 0, 0, 2041, None, 1792),
+            (0, 55552, 0, 2041, None, 1792),
+            (0, 0, 55552, 2041, None, 1792),
+            (56064, 0, 0, 1536, 1536, 1280),
+            (57088, 0, 0, 384, 384, 256),
+            (57280, 0, 0, 256, 256, 64),
+        )
+        for eagle in (False, True):
+            for start, local, external, budget, cap, expected in cases:
+                with self.subTest(eagle=eagle, start=start, local=local, external=external):
+                    scheduler = self.scheduler(896)
+                    scheduler.use_eagle = eagle
+                    scheduler._glm53_align_prefill_limit = cap
+                    request = SimpleNamespace(num_computed_tokens=start,
+                        num_prompt_tokens=232000, num_tokens=232000, shared_prefix_boundary=0)
+                    count = self.split(scheduler, request, budget, local, external)
+                    self.assertEqual(count, expected)
+                    self.assertEqual((start + local + external + count) % 4, 0)
+        scheduler = self.scheduler(896)
+        request = SimpleNamespace(num_computed_tokens=57342, num_prompt_tokens=50000,
+                                  num_tokens=57343, shared_prefix_boundary=0)
+        self.assertEqual(self.split(scheduler, request, 8), 8)
 
 
 class TensorTests(unittest.TestCase):
