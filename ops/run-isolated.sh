@@ -3,8 +3,8 @@ set -Eeuo pipefail
 umask 077
 
 task_root=/home/ratulsarna/assistants/forge/work/glm-compact-dedup-20260923
-arm=${1:?Choose final}
-[[ $arm == final ]] || exit 2
+arm=${1:?Choose stable}
+[[ $arm == stable ]] || exit 2
 checkout=$task_root/$arm
 set -a
 source "$checkout/.env"
