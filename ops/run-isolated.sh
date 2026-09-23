@@ -3,12 +3,18 @@ set -Eeuo pipefail
 umask 077
 
 task_root=/home/ratulsarna/assistants/forge/work/glm-compact-dedup-20260923
-arm=${1:?Choose candidate}
-[[ $arm == candidate ]] || exit 2
+arm=${1:?Choose final}
+[[ $arm == final ]] || exit 2
 checkout=$task_root/$arm
 set -a
 source "$checkout/.env"
 set +a
+# The production build serves routed experts on the fast thin-decode kernels;
+# the stock kernels cost about 9 ms per decode step on this model.
+if [[ ${GLM53_EXL3_MOE_FAST-} != 1 ]]; then
+    echo 'GLM53_EXL3_MOE_FAST=1 is required to match production decode' >&2
+    exit 2
+fi
 mode=${2:-isolated}
 [[ $mode == isolated || $mode == managed ]] || exit 2
 pid_file=$task_root/$arm-supervisor.pid
