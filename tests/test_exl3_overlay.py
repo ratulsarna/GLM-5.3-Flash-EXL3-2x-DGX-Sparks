@@ -1308,12 +1308,12 @@ def _check_dflash2() -> None:
     assert "type(v) is SlidingWindowSpec" in kv
     # Standalone DFlash2 must not inherit the 1152-token MLA manager block
     # (that doubled per-block bytes and pinned concurrency at ~1× max_len).
-    assert "compact_block = 64" in kv
+    assert "compact_block = _glm53_draft_block_size(" in kv
     assert "page_size_padded=mla_page" in kv
     assert "padded slot-share block=%d" in kv
-    assert "s.block_size != 64 or s.page_size_padded != mla_page" in kv
-    standalone = kv.split("PADDED SLOT-SHARE:")[1].split("draft_uniform")[0]
-    assert "compact_block" in standalone
+    assert "or attn_uniform.block_size % s.block_size" in kv
+    standalone = kv.split("compact_block = _glm53_draft_block_size(")[1].split("draft_uniform")[0]
+    assert "mla_block" in standalone
     assert "page_size_padded=mla_page" in standalone
     assert "new_draft_specs = dict(draft_specs)" not in standalone
     src = Path("/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_dflash.py").read_text()

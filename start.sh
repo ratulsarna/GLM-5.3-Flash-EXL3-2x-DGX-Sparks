@@ -122,7 +122,7 @@ MODEL_REVISION="${MODEL_REVISION:-25a44fdbf16862a46b7cc9921142c6c81350af2f}"
 # fallback, revision and inventory, and that exact snapshot is then required on
 # every path: refs/main is not consulted for it, and a complete but different
 # cached revision does not satisfy the checks.
-MODEL_SNAPSHOT=""
+MODEL_SNAPSHOT="${MODEL_REVISION:?A pinned target revision is required}"
 MODEL_FALLBACK_SNAPSHOT=""
 MODEL_PINNED_SHARDS=""
 GLM53_MODEL_PRESET="${GLM53_MODEL_PRESET:-}"
@@ -190,6 +190,7 @@ USE_HOST_NCCL="${USE_HOST_NCCL:-0}"
 
 TP="${TP:-2}"
 NNODES="${NNODES:-2}"
+API_HOST="${API_HOST:-127.0.0.1}"
 PORT="${PORT:-8888}"
 MASTER_PORT="${MASTER_PORT:-29521}"
 
@@ -241,6 +242,7 @@ VIDEO_PATCH_HOST="${VIDEO_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_glm_video_placeh
 STOP_PATCH_HOST="${STOP_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_suppress_stops_in_reasoning.py}"
 SCHED_PATCH_HOST="${SCHED_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_scheduler_decode_floor.py}"
 DRAFTER_PATCH_HOST="${DRAFTER_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_glm5_drafter_group.py}"
+DEDUP_PATCH_HOST="${DEDUP_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_apc_free_duplicates.py}"
 APC_PATCH_HOST="${APC_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_hybrid_prefix_hit.py}"
 PERGROUP_PATCH_HOST="${PERGROUP_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_apc_per_group_retention.py}"
 NOSTORE_PATCH_HOST="${NOSTORE_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_apc_no_store.py}"
@@ -475,6 +477,7 @@ DFLASH_PATH="$HF_CACHE_DIR/hub/$DFLASH_CACHE_NAME"
 WORKER_CACHE_DIR="$WORKER_HOME/.cache/huggingface"
 CACHE_ROOT="${CACHE_ROOT:-$HOME/.cache/vllm-glm53-flash}"
 WORKER_VLLM_CACHE="${WORKER_VLLM_CACHE:-$WORKER_HOME/.cache/vllm-glm53-flash}"
+WORKER_STAGE="${WORKER_VLLM_CACHE:?}/stage-compact-dedup"
 # Overlay FS ~/.triton and ~/.tilelang die on container recreate (TP=2 JIT
 # stall → 600s NCCL watchdog). Persist next to the vLLM cache.
 TRITON_HOST_CACHE="${TRITON_HOST_CACHE:-$CACHE_ROOT/triton}"
@@ -484,14 +487,14 @@ WORKER_TILELANG_CACHE="${WORKER_TILELANG_CACHE:-$WORKER_VLLM_CACHE/tilelang}"
 TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/root/.triton/cache}"
 TILELANG_CACHE_DIR="${TILELANG_CACHE_DIR:-/root/.tilelang/cache}"
 
-LOGDIR="$SCRIPT_DIR/logs"
+LOGDIR="${LOGDIR:-$SCRIPT_DIR/logs}"
 # TP2 lifecycle lock (helpers below). start/restart take it without waiting;
 # stop waits CLUSTER_LOCK_WAIT seconds and then refuses with exit 1.
 CLUSTER_LOCK="$LOGDIR/cluster.lock"
 CLUSTER_LOCK_PID="$LOGDIR/cluster.lock.pid"
 CLUSTER_LOCK_WAIT=30
-HEAD_SCRIPT="$SCRIPT_DIR/.glm53-exl3-head.inner.sh"
-WORKER_SCRIPT="$SCRIPT_DIR/.glm53-exl3-worker.inner.sh"
+HEAD_SCRIPT="${HEAD_SCRIPT:-$SCRIPT_DIR/.glm53-exl3-head.inner.sh}"
+WORKER_SCRIPT="${WORKER_SCRIPT:-$SCRIPT_DIR/.glm53-exl3-worker.inner.sh}"
 EXPECTED_SHARDS="${EXPECTED_SHARDS:-120}"
 # Under a preset the pinned inventory wins: a caller EXPECTED_SHARDS must not
 # lower the gate for one exact checkpoint.
@@ -521,7 +524,7 @@ _hf_mount() {
     if [ "${NFS_SHARE:-0}" = "1" ]; then
         nfs_hf_mount_spec
     else
-        printf '%s:/root/.cache/huggingface' "$WORKER_CACHE_DIR"
+        printf '%s:/root/.cache/huggingface:ro' "$WORKER_CACHE_DIR"
     fi
 }
 
@@ -754,6 +757,7 @@ validate_overlay_artifacts() {
         "$DRAFTER_PATCH_HOST|vllm/v1/core/kv_cache_utils.py|$main_guard"
         "$APC_PATCH_HOST|[glm53-hybrid-apc]|$main_guard"
         "$PERGROUP_PATCH_HOST|glm53-apc-per-group-contract:explicit-v1|$main_guard"
+        "$DEDUP_PATCH_HOST|[glm53-apc-free-duplicates]|$main_guard"
         "$NOSTORE_PATCH_HOST|[glm53-apc-no-store]|$main_guard"
         "$KVCAP_PATCH_HOST|[glm53-kv-capacity-log]|$main_guard"
         "$TOOLCHOICE_PATCH_HOST|[glm53-tool-choice-none]|$main_guard"
@@ -1147,6 +1151,7 @@ preflight() {
     [ -f "$DRAFTER_PATCH_HOST" ] || die "$DRAFTER_PATCH_HOST missing"
     [ -f "$APC_PATCH_HOST" ] || die "$APC_PATCH_HOST missing"
     [ -f "$PERGROUP_PATCH_HOST" ] || die "$PERGROUP_PATCH_HOST missing"
+    [ -f "$DEDUP_PATCH_HOST" ] || die "$DEDUP_PATCH_HOST missing"
     [ -f "$NOSTORE_PATCH_HOST" ] || die "$NOSTORE_PATCH_HOST missing"
     [ -f "$KVCAP_PATCH_HOST" ] || die "$KVCAP_PATCH_HOST missing"
     [ -f "$TOOLCHOICE_PATCH_HOST" ] || die "$TOOLCHOICE_PATCH_HOST missing"
@@ -1652,6 +1657,7 @@ GLM53_OVERLAY_ORDER=(
     patch_glm5_drafter_group.py
     patch_hybrid_prefix_hit.py
     patch_apc_per_group_retention.py
+    patch_apc_free_duplicates.py
     patch_apc_no_store.py
     patch_mamba_align_state_free.py
     patch_kv_capacity_log.py
@@ -1684,8 +1690,9 @@ say() { echo "[glm53-exl3-head] $*"; }
 
 ARGS=(
     --served-model-name "${SERVED_MODEL_NAME}"
-    --host 0.0.0.0
+    --host "${API_HOST}"
     --port "${PORT}"
+    --enable-prompt-tokens-details
     --tensor-parallel-size "${TP}"
     --nnodes "${NNODES}"
     --node-rank 0
@@ -1763,7 +1770,7 @@ say() { echo "[glm53-exl3-worker] $*"; }
 
 ARGS=(
     --served-model-name "${SERVED_MODEL_NAME}"
-    --host 0.0.0.0
+    --host 127.0.0.1
     --port "${PORT}"
     --tensor-parallel-size "${TP}"
     --nnodes "${NNODES}"
@@ -1881,53 +1888,55 @@ launch_cluster() {
     worker_ssh "docker rm -f '$CONTAINER_WORKER'" >/dev/null 2>&1 || true
 
     mkdir -p "$CACHE_ROOT" "$TRITON_HOST_CACHE" "$TILELANG_HOST_CACHE"
-    worker_ssh "mkdir -p '$WORKER_VLLM_CACHE' '$WORKER_TRITON_CACHE' '$WORKER_TILELANG_CACHE'"
-    scp -q -o BatchMode=yes "$WORKER_SCRIPT" "${WORKER_SSH}:/tmp/${CONTAINER_WORKER}.sh"
+    worker_ssh "mkdir -p '$WORKER_VLLM_CACHE' '$WORKER_TRITON_CACHE' '$WORKER_TILELANG_CACHE' '$WORKER_STAGE'"
+    scp -q -o BatchMode=yes "$WORKER_SCRIPT" "${WORKER_SSH}:${WORKER_STAGE}/${CONTAINER_WORKER}.sh"
     [ -f "$CHAT_TEMPLATE_HOST" ] || die "missing chat template: $CHAT_TEMPLATE_HOST"
-    scp -q -o BatchMode=yes "$CHAT_TEMPLATE_HOST" "${WORKER_SSH}:/tmp/glm53-chat_template.jinja"
+    scp -q -o BatchMode=yes "$CHAT_TEMPLATE_HOST" "${WORKER_SSH}:${WORKER_STAGE}/glm53-chat_template.jinja"
     [ -f "$VIDEO_PATCH_HOST" ] || die "missing $VIDEO_PATCH_HOST"
-    scp -q -o BatchMode=yes "$VIDEO_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_glm_video_placeholders.py"
+    scp -q -o BatchMode=yes "$VIDEO_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_glm_video_placeholders.py"
     [ -f "$STOP_PATCH_HOST" ] || die "missing $STOP_PATCH_HOST"
-    scp -q -o BatchMode=yes "$STOP_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_suppress_stops_in_reasoning.py"
+    scp -q -o BatchMode=yes "$STOP_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_suppress_stops_in_reasoning.py"
     [ -f "$TOOLCHOICE_PATCH_HOST" ] || die "missing $TOOLCHOICE_PATCH_HOST"
-    scp -q -o BatchMode=yes "$TOOLCHOICE_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_tool_choice_none.py"
+    scp -q -o BatchMode=yes "$TOOLCHOICE_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_tool_choice_none.py"
     [ -f "$SCHED_PATCH_HOST" ] || die "missing $SCHED_PATCH_HOST"
-    scp -q -o BatchMode=yes "$SCHED_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_scheduler_decode_floor.py"
+    scp -q -o BatchMode=yes "$SCHED_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_scheduler_decode_floor.py"
     [ -f "$DRAFTER_PATCH_HOST" ] || die "missing $DRAFTER_PATCH_HOST"
-    scp -q -o BatchMode=yes "$DRAFTER_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_glm5_drafter_group.py"
+    scp -q -o BatchMode=yes "$DRAFTER_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_glm5_drafter_group.py"
     [ -f "$APC_PATCH_HOST" ] || die "missing $APC_PATCH_HOST"
-    scp -q -o BatchMode=yes "$APC_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_hybrid_prefix_hit.py"
+    scp -q -o BatchMode=yes "$APC_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_hybrid_prefix_hit.py"
     [ -f "$PERGROUP_PATCH_HOST" ] || die "missing $PERGROUP_PATCH_HOST"
-    scp -q -o BatchMode=yes "$PERGROUP_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_apc_per_group_retention.py"
+    scp -q -o BatchMode=yes "$PERGROUP_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_apc_per_group_retention.py"
+    [ -f "$DEDUP_PATCH_HOST" ] || die "missing $DEDUP_PATCH_HOST"
+    scp -q -o BatchMode=yes "$DEDUP_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_apc_free_duplicates.py"
     [ -f "$NOSTORE_PATCH_HOST" ] || die "missing $NOSTORE_PATCH_HOST"
-    scp -q -o BatchMode=yes "$NOSTORE_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_apc_no_store.py"
+    scp -q -o BatchMode=yes "$NOSTORE_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_apc_no_store.py"
     [ -f "$KVCAP_PATCH_HOST" ] || die "missing $KVCAP_PATCH_HOST"
-    scp -q -o BatchMode=yes "$KVCAP_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_kv_capacity_log.py"
+    scp -q -o BatchMode=yes "$KVCAP_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_kv_capacity_log.py"
     [ -f "$XGRAMMAR_PATCH_HOST" ] || die "missing $XGRAMMAR_PATCH_HOST"
-    scp -q -o BatchMode=yes "$XGRAMMAR_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_xgrammar_termination.py"
+    scp -q -o BatchMode=yes "$XGRAMMAR_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_xgrammar_termination.py"
     [ -f "$CACHE_RESET_PATCH_HOST" ] || die "missing $CACHE_RESET_PATCH_HOST"
-    scp -q -o BatchMode=yes "$CACHE_RESET_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_cache_reset.py"
+    scp -q -o BatchMode=yes "$CACHE_RESET_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_cache_reset.py"
     [ -f "$KPOOL_TAIL_PATCH_HOST" ] || die "missing $KPOOL_TAIL_PATCH_HOST"
-    scp -q -o BatchMode=yes "$KPOOL_TAIL_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_kpool_tail_slotmap.py"
+    scp -q -o BatchMode=yes "$KPOOL_TAIL_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_kpool_tail_slotmap.py"
     [ -f "$MAMBA_STATE_PATCH_HOST" ] || die "missing $MAMBA_STATE_PATCH_HOST"
-    scp -q -o BatchMode=yes "$MAMBA_STATE_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_mamba_align_state_free.py"
+    scp -q -o BatchMode=yes "$MAMBA_STATE_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_mamba_align_state_free.py"
     [ -f "$MAMBA_CHUNK_PATCH_HOST" ] || die "missing $MAMBA_CHUNK_PATCH_HOST"
-    scp -q -o BatchMode=yes "$MAMBA_CHUNK_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_mamba_align_chunking.py"
+    scp -q -o BatchMode=yes "$MAMBA_CHUNK_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_mamba_align_chunking.py"
     [ -f "$SPINWAIT_PATCH_HOST" ] || die "missing $SPINWAIT_PATCH_HOST"
-    scp -q -o BatchMode=yes "$SPINWAIT_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_spinwait.py"
+    scp -q -o BatchMode=yes "$SPINWAIT_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_spinwait.py"
     [ -f "$ADAPTIVE_K_PATCH_HOST" ] || die "missing $ADAPTIVE_K_PATCH_HOST"
-    scp -q -o BatchMode=yes "$ADAPTIVE_K_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_adaptive_k.py"
+    scp -q -o BatchMode=yes "$ADAPTIVE_K_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_adaptive_k.py"
     [ -f "$DENSE_FP8_PATCH_HOST" ] || die "missing $DENSE_FP8_PATCH_HOST"
-    scp -q -o BatchMode=yes "$DENSE_FP8_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_dense_fp8.py"
+    scp -q -o BatchMode=yes "$DENSE_FP8_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_dense_fp8.py"
     [ -f "$DEFAULT_TOKENS_PATCH_HOST" ] || die "missing $DEFAULT_TOKENS_PATCH_HOST"
-    scp -q -o BatchMode=yes "$DEFAULT_TOKENS_PATCH_HOST" "${WORKER_SSH}:/tmp/patch_default_max_new_tokens.py"
-    scp -q -o BatchMode=yes "$EXL3_OVERLAY_HOST" "${WORKER_SSH}:/tmp/glm53-exl3.py"
+    scp -q -o BatchMode=yes "$DEFAULT_TOKENS_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_default_max_new_tokens.py"
+    scp -q -o BatchMode=yes "$EXL3_OVERLAY_HOST" "${WORKER_SSH}:${WORKER_STAGE}/glm53-exl3.py"
     _glm53_stage_coop_runtime_worker
 
-    worker_ssh "rm -rf /tmp/glm53-ablit"
-    scp -q -r -o BatchMode=yes "$SCRIPT_DIR/ablit" "${WORKER_SSH}:/tmp/glm53-ablit"
-    scp -q -o BatchMode=yes "$SCRIPT_DIR/overlay/ablit_runtime.py" "${WORKER_SSH}:/tmp/glm53-ablit_runtime.py"
-    scp -q -o BatchMode=yes "$SCRIPT_DIR/overlay/patch_ablit.py" "${WORKER_SSH}:/tmp/patch_ablit.py"
+    worker_ssh "rm -rf ${WORKER_STAGE}/glm53-ablit"
+    scp -q -r -o BatchMode=yes "$SCRIPT_DIR/ablit" "${WORKER_SSH}:${WORKER_STAGE}/glm53-ablit"
+    scp -q -o BatchMode=yes "$SCRIPT_DIR/overlay/ablit_runtime.py" "${WORKER_SSH}:${WORKER_STAGE}/glm53-ablit_runtime.py"
+    scp -q -o BatchMode=yes "$SCRIPT_DIR/overlay/patch_ablit.py" "${WORKER_SSH}:${WORKER_STAGE}/patch_ablit.py"
 
     local -a nccl_common=(
         -e NCCL_IB_DISABLE=0
@@ -2091,7 +2100,12 @@ launch_cluster() {
     # credential into its remote docker command or container environment.
 
     log "starting worker on ${WORKER_SSH} (NCCL if=${WORKER_CX7_IF} hca=${WORKER_CX7_IB}) ..."
-    worker_ssh "docker run -d --name '$CONTAINER_WORKER' \
+    worker_ssh "docker run -d --restart no --name '$CONTAINER_WORKER' \
+        --label forge.glm-dd.model='$SERVED_MODEL_NAME' \
+        --label forge.glm-dd.rank=worker \
+        --label forge.glm-dd.lifecycle-owner=forge-isolated \
+        --label forge.glm-dd.lease-token-sha256='${SPARK_SERVE_LEASE_TOKEN_SHA256:-}' \
+        --label forge.glm-dd.recipe-commit='${MIA_RECIPE_COMMIT:-}' \
         --gpus all --network host --ipc=host --shm-size 32g --stop-timeout 60 \
         --device /dev/infiniband --cap-add IPC_LOCK \
         --ulimit memlock=-1 --ulimit stack=67108864 \
@@ -2099,30 +2113,31 @@ launch_cluster() {
         -v '$WORKER_VLLM_CACHE:/root/.cache/vllm' \
         -v '$WORKER_TRITON_CACHE:/root/.triton/cache' \
         -v '$WORKER_TILELANG_CACHE:/root/.tilelang/cache' \
-        -v '/tmp/${CONTAINER_WORKER}.sh:/start.sh:ro' \
-        -v '/tmp/glm53-chat_template.jinja:${CHAT_TEMPLATE}:ro' \
-        -v '/tmp/patch_glm_video_placeholders.py:/opt/glm53/patch_glm_video_placeholders.py:ro' \
-        -v '/tmp/patch_suppress_stops_in_reasoning.py:/opt/glm53/patch_suppress_stops_in_reasoning.py:ro' \
-        -v '/tmp/patch_scheduler_decode_floor.py:/opt/glm53/patch_scheduler_decode_floor.py:ro' \
-        -v '/tmp/patch_tool_choice_none.py:/opt/glm53/patch_tool_choice_none.py:ro' \
-        -v '/tmp/patch_glm5_drafter_group.py:/opt/glm53/patch_glm5_drafter_group.py:ro' \
-        -v '/tmp/patch_hybrid_prefix_hit.py:/opt/glm53/patch_hybrid_prefix_hit.py:ro' \
-        -v '/tmp/patch_apc_per_group_retention.py:/opt/glm53/patch_apc_per_group_retention.py:ro' \
-        -v '/tmp/patch_apc_no_store.py:/opt/glm53/patch_apc_no_store.py:ro' \
-        -v '/tmp/patch_kv_capacity_log.py:/opt/glm53/patch_kv_capacity_log.py:ro' \
-        -v '/tmp/patch_xgrammar_termination.py:/opt/glm53/patch_xgrammar_termination.py:ro' \
-        -v '/tmp/patch_cache_reset.py:/opt/glm53/patch_cache_reset.py:ro' \
-        -v '/tmp/patch_kpool_tail_slotmap.py:/opt/glm53/patch_kpool_tail_slotmap.py:ro' \
-        -v '/tmp/patch_mamba_align_state_free.py:/opt/glm53/patch_mamba_align_state_free.py:ro' \
-        -v '/tmp/patch_mamba_align_chunking.py:/opt/glm53/patch_mamba_align_chunking.py:ro' \
-        -v '/tmp/patch_spinwait.py:/opt/glm53/patch_spinwait.py:ro' \
-        -v '/tmp/patch_adaptive_k.py:/opt/glm53/patch_adaptive_k.py:ro' \
-        -v '/tmp/patch_dense_fp8.py:/opt/glm53/patch_dense_fp8.py:ro' \
-        -v '/tmp/patch_default_max_new_tokens.py:/opt/glm53/patch_default_max_new_tokens.py:ro' \
-        -v '/tmp/glm53-exl3.py:/opt/glm53/exl3.py:ro' \
-        -v '/tmp/glm53-ablit:/opt/glm53/ablit:ro' \
-        -v '/tmp/glm53-ablit_runtime.py:/opt/glm53/ablit_runtime.py:ro' \
-        -v '/tmp/patch_ablit.py:/opt/glm53/patch_ablit.py:ro' \
+        -v '${WORKER_STAGE}/${CONTAINER_WORKER}.sh:/start.sh:ro' \
+        -v '${WORKER_STAGE}/glm53-chat_template.jinja:${CHAT_TEMPLATE}:ro' \
+        -v '${WORKER_STAGE}/patch_glm_video_placeholders.py:/opt/glm53/patch_glm_video_placeholders.py:ro' \
+        -v '${WORKER_STAGE}/patch_suppress_stops_in_reasoning.py:/opt/glm53/patch_suppress_stops_in_reasoning.py:ro' \
+        -v '${WORKER_STAGE}/patch_scheduler_decode_floor.py:/opt/glm53/patch_scheduler_decode_floor.py:ro' \
+        -v '${WORKER_STAGE}/patch_tool_choice_none.py:/opt/glm53/patch_tool_choice_none.py:ro' \
+        -v '${WORKER_STAGE}/patch_glm5_drafter_group.py:/opt/glm53/patch_glm5_drafter_group.py:ro' \
+        -v '${WORKER_STAGE}/patch_hybrid_prefix_hit.py:/opt/glm53/patch_hybrid_prefix_hit.py:ro' \
+        -v '${WORKER_STAGE}/patch_apc_per_group_retention.py:/opt/glm53/patch_apc_per_group_retention.py:ro' \
+        -v '${WORKER_STAGE}/patch_apc_free_duplicates.py:/opt/glm53/patch_apc_free_duplicates.py:ro' \
+        -v '${WORKER_STAGE}/patch_apc_no_store.py:/opt/glm53/patch_apc_no_store.py:ro' \
+        -v '${WORKER_STAGE}/patch_kv_capacity_log.py:/opt/glm53/patch_kv_capacity_log.py:ro' \
+        -v '${WORKER_STAGE}/patch_xgrammar_termination.py:/opt/glm53/patch_xgrammar_termination.py:ro' \
+        -v '${WORKER_STAGE}/patch_cache_reset.py:/opt/glm53/patch_cache_reset.py:ro' \
+        -v '${WORKER_STAGE}/patch_kpool_tail_slotmap.py:/opt/glm53/patch_kpool_tail_slotmap.py:ro' \
+        -v '${WORKER_STAGE}/patch_mamba_align_state_free.py:/opt/glm53/patch_mamba_align_state_free.py:ro' \
+        -v '${WORKER_STAGE}/patch_mamba_align_chunking.py:/opt/glm53/patch_mamba_align_chunking.py:ro' \
+        -v '${WORKER_STAGE}/patch_spinwait.py:/opt/glm53/patch_spinwait.py:ro' \
+        -v '${WORKER_STAGE}/patch_adaptive_k.py:/opt/glm53/patch_adaptive_k.py:ro' \
+        -v '${WORKER_STAGE}/patch_dense_fp8.py:/opt/glm53/patch_dense_fp8.py:ro' \
+        -v '${WORKER_STAGE}/patch_default_max_new_tokens.py:/opt/glm53/patch_default_max_new_tokens.py:ro' \
+        -v '${WORKER_STAGE}/glm53-exl3.py:/opt/glm53/exl3.py:ro' \
+        -v '${WORKER_STAGE}/glm53-ablit:/opt/glm53/ablit:ro' \
+        -v '${WORKER_STAGE}/glm53-ablit_runtime.py:/opt/glm53/ablit_runtime.py:ro' \
+        -v '${WORKER_STAGE}/patch_ablit.py:/opt/glm53/patch_ablit.py:ro' \
         ${worker_preload} \
         ${worker_nccl} \
         -e NCCL_SOCKET_IFNAME='$WORKER_CX7_IF' \
@@ -2134,11 +2149,16 @@ launch_cluster() {
         --entrypoint bash '$IMAGE' /start.sh" >/dev/null
 
     log "starting head (vLLM API :${PORT}; NCCL if=${HEAD_CX7_IF} hca=${HEAD_CX7_IB}) ..."
-    VLLM_API_KEY="$VLLM_API_KEY" docker run -d --name "$CONTAINER_HEAD" \
+    VLLM_API_KEY="$VLLM_API_KEY" docker run -d --restart no --name "$CONTAINER_HEAD" \
+        --label "forge.glm-dd.model=$SERVED_MODEL_NAME" \
+        --label forge.glm-dd.rank=head \
+        --label forge.glm-dd.lifecycle-owner=forge-isolated \
+        --label "forge.glm-dd.lease-token-sha256=${SPARK_SERVE_LEASE_TOKEN_SHA256:-}" \
+        --label "forge.glm-dd.recipe-commit=${MIA_RECIPE_COMMIT:-}" \
         --gpus all --network host --ipc=host --shm-size 32g --stop-timeout 60 \
         --device /dev/infiniband --cap-add IPC_LOCK \
         --ulimit memlock=-1 --ulimit stack=67108864 \
-        -v "$HF_CACHE_DIR:/root/.cache/huggingface" \
+        -v "$HF_CACHE_DIR:/root/.cache/huggingface:ro" \
         -v "$CACHE_ROOT:/root/.cache/vllm" \
         -v "$TRITON_HOST_CACHE:/root/.triton/cache" \
         -v "$TILELANG_HOST_CACHE:/root/.tilelang/cache" \
@@ -2151,6 +2171,7 @@ launch_cluster() {
         -v "$DRAFTER_PATCH_HOST:/opt/glm53/patch_glm5_drafter_group.py:ro" \
         -v "$APC_PATCH_HOST:/opt/glm53/patch_hybrid_prefix_hit.py:ro" \
         -v "$PERGROUP_PATCH_HOST:/opt/glm53/patch_apc_per_group_retention.py:ro" \
+        -v "$DEDUP_PATCH_HOST:/opt/glm53/patch_apc_free_duplicates.py:ro" \
         -v "$NOSTORE_PATCH_HOST:/opt/glm53/patch_apc_no_store.py:ro" \
         -v "$KVCAP_PATCH_HOST:/opt/glm53/patch_kv_capacity_log.py:ro" \
         -v "$XGRAMMAR_PATCH_HOST:/opt/glm53/patch_xgrammar_termination.py:ro" \
@@ -2173,6 +2194,7 @@ launch_cluster() {
         -e NCCL_IB_HCA="$HEAD_CX7_IB" \
         -e NCCL_IB_GID_INDEX="$HEAD_GID" \
         -e VLLM_HOST_IP="$HEAD_IP" \
+        -e API_HOST="$API_HOST" \
         -e SERVED_MODEL_NAME="$SERVED_MODEL_NAME" \
         -e PORT="$PORT" -e TP="$TP" -e NNODES="$NNODES" \
         -e HEAD_IP="$HEAD_IP" -e MASTER_PORT="$MASTER_PORT" \
@@ -2232,7 +2254,7 @@ launch_cluster() {
 
 # ---------------------------- health wait ----------------------------------
 wait_for_health() {
-    local url="http://127.0.0.1:${PORT}/health"
+    local url="http://${API_HOST}:${PORT}/health"
     log "waiting for ${url} (weight load + warmup on a 320B MoE is slow; timeout ${READY_TIMEOUT}s) ..."
     log "streaming head logs live — Ctrl-C detaches, the server keeps running"
 
@@ -2313,7 +2335,7 @@ post_ready_warmup() {
     GLM53_WARMUP_TRITON_CACHE_DIR="$TRITON_HOST_CACHE" \
     GLM53_WARMUP_BEARER="${VLLM_API_KEY:-}" \
         bash "$SCRIPT_DIR/scripts/boot-shape-warmup.sh" \
-            "http://127.0.0.1:${PORT}" "$SERVED_MODEL_NAME" \
+            "http://${API_HOST}:${PORT}" "$SERVED_MODEL_NAME" \
         || warn "boot shape warmup incomplete — uncovered shapes may JIT mid-serve on TP=2"
 }
 
@@ -2326,7 +2348,7 @@ collect_failure_logs() {
 on_ready() {
     log "======================================================================"
     log "GLM-5.3-Flash EXL3 is UP (TP=${TP}, nnodes=${NNODES})"
-    log "  endpoints  : http://127.0.0.1:${PORT}/v1   (LAN: ${HEAD_IP}:${PORT})"
+    log "  endpoints  : http://${API_HOST}:${PORT}/v1   (LAN: ${HEAD_IP}:${PORT})"
     log "  model name : ${SERVED_MODEL_NAME}"
     log "  weights    : ${MODEL}  quant=${QUANTIZATION}  kv=${KV_CACHE_DTYPE}"
     local vision=on
@@ -2345,7 +2367,7 @@ on_ready() {
     fi
     log "  auth       : ${auth_line}"
     log "  quick test :"
-    log "    curl -s http://127.0.0.1:${PORT}/v1/chat/completions \\"
+    log "    curl -s http://${API_HOST}:${PORT}/v1/chat/completions \\"
     if [ -n "${VLLM_API_KEY:-}" ]; then
         log "      -H 'Authorization: Bearer <KEY>' \\"
     fi
@@ -2424,8 +2446,8 @@ stop() {
 status() {
     log "head (${CONTAINER_HEAD} on $(hostname)):"
     docker ps -a --filter "name=${CONTAINER_HEAD}" --format '  {{.Names}}  {{.Status}}' || true
-    if curl -fsS -m 5 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
-        log "  API: healthy — http://127.0.0.1:${PORT}/v1"
+    if curl -fsS -m 5 "http://${API_HOST}:${PORT}/health" >/dev/null 2>&1; then
+        log "  API: healthy — http://${API_HOST}:${PORT}/v1"
     else
         log "  API: not responding"
     fi
