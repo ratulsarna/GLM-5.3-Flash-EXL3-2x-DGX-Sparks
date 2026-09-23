@@ -132,15 +132,16 @@ There were no git tags for 1.0.0–1.4.0; 1.5.0 is the first cut named as a rele
   `MambaSpec.max_memory_usage_bytes`
   reserves `1 + max_concurrent_batches + num_speculative_blocks` pages in
   align mode (10 here, was 9), matching the resident peak.
-- `overlay/patch_mamba_align_chunking.py`: align prefill chunks to the Mamba
-  groups' block instead of `cache_config.block_size`, which the drafter
-  group drags down to its page (64, or the compact page). Off-block chunk
-  ends could hash a running state under the next boundary's label and miss
-  valid checkpoints (stock diagnostic: tails 2047, 2048, 2049 and 3583 behind
-  a 28,672-token prefix hit 25,088 while the target cached 28,672).
-  The one-block EAGLE back-off applies only when full attention is an EAGLE
-  group. Sub-block budgets keep advancing; with a 7168-token budget the
-  aligned chunk is one Mamba block. Requires decode-floor v5.
+- `overlay/patch_mamba_hash_block_split.py` replaces
+  `patch_mamba_align_chunking.py`. Prefill chunks align to the 64-token hash
+  block, as in the production recipe, and every Mamba block boundary is a
+  mandatory stop, so each hashed Mamba checkpoint holds the state at its own
+  boundary. Aligning chunks to the Mamba block instead produced chunk lengths
+  that are not multiples of 64 (1,650; 2,041 + 1,543), and teacher-forced
+  prompt scores from two identical cold requests then agreed on only 75% of
+  argmax positions (97% with this split). The stock EAGLE back-off is kept:
+  at the hash block it moves one chunk end by 64 tokens and no checkpoint
+  depends on it. Requires decode-floor v5.
 - Under `GLM53_DRAFT_KV_COMPACT=1`, the DFlash drafter manager drops the
   extra EAGLE lookahead block from each retained window; the KV-capacity
   log costs the boundary lookup accordingly (`lookup=boundary`). The

@@ -556,11 +556,11 @@ state independently of compact draft pages. `patch_mamba_align_state_free.py`
 tracks every superseded state until committed progress makes release safe,
 instead of overwriting an unreleased state index during async prefill.
 Align-mode admission reserves the running state, speculative states, and
-one superseded state per concurrent batch. `patch_mamba_align_chunking.py`
-uses the Mamba group's actual block for checkpoint alignment, not the
-drafter's smaller block, and applies EAGLE back-off only when the full-attention
-group needs it. Sub-block token caps still make progress. The launchers apply
-the chunking overlay after decode-floor v5.
+one superseded state per concurrent batch. `patch_mamba_hash_block_split.py`
+aligns prefill chunks to the 64-token hash block, not the drafter's page, and
+stops every chunk at each Mamba block boundary so every cached checkpoint holds
+its own boundary's state. Sub-block token caps still make progress. The
+launchers apply the split overlay after decode-floor v5.
 
 **Installer compatibility.** The public InstantTensor image carries a legacy
 `glm53-hybrid-apc` coordinator without the current v3 verification form.
@@ -740,11 +740,12 @@ equivalence, changed suffixes and shared prefixes, evicted window blocks,
 the off-by-default gate, and the DFlash-only preflight on padded, exact-fit,
 and non-GLM grouping paths.
 
-The Mamba regressions are `tests/test_mamba_align_state_free.py` and
-`tests/test_mamba_align_chunking.py`. Point
-`GLM53_SINGLE_TYPE_KV_CACHE_MANAGER_PY`, `GLM53_KV_CACHE_INTERFACE_PY` and
+The Mamba regressions are `tests/test_mamba_align_state_free.py`,
+`tests/test_mamba_hash_block_split.py` and `tests/test_mamba_checkpoint_payload.py`.
+Point `GLM53_SINGLE_TYPE_KV_CACHE_MANAGER_PY`, `GLM53_KV_CACHE_INTERFACE_PY` and
 `GLM53_SCHEDULER_PY` at matching source files from a supported image, then
-run both with pytest. They exercise bounded async state ownership, safe
+run the first two with pytest; the payload replay takes `--source-root` at the
+image's `vllm` package. They exercise bounded async state ownership, safe
 release and request-ID reuse, checkpoint state positions, sub-block
 progress, installer idempotence and refusal of unsupported source.
 

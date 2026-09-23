@@ -470,9 +470,9 @@ COPY overlay/patch_cache_reset.py /opt/glm53/patch_cache_reset.py
 COPY tests/test_cache_reset_endpoint.py /opt/glm53/test_cache_reset_endpoint.py
 COPY overlay/patch_kpool_tail_slotmap.py /opt/glm53/patch_kpool_tail_slotmap.py
 COPY overlay/patch_mamba_align_state_free.py /opt/glm53/patch_mamba_align_state_free.py
-COPY overlay/patch_mamba_align_chunking.py /opt/glm53/patch_mamba_align_chunking.py
+COPY overlay/patch_mamba_hash_block_split.py /opt/glm53/patch_mamba_hash_block_split.py
 COPY tests/test_mamba_align_state_free.py /opt/glm53/test_mamba_align_state_free.py
-COPY tests/test_mamba_align_chunking.py /opt/glm53/test_mamba_align_chunking.py
+COPY tests/test_mamba_hash_block_split.py /opt/glm53/test_mamba_hash_block_split.py
 COPY tests/test_kpool_tail_slotmap.py /opt/glm53/test_kpool_tail_slotmap.py
 COPY overlay/patch_spinwait.py /opt/glm53/patch_spinwait.py
 COPY tests/test_spinwait_patch.py /opt/glm53/test_spinwait_patch.py
@@ -491,8 +491,8 @@ RUN python3 /opt/glm53/patch_glm5_drafter_group.py
 RUN python3 /opt/glm53/patch_suppress_stops_in_reasoning.py
 RUN python3 /opt/glm53/patch_scheduler_decode_floor.py
 # Same slot as GLM53_OVERLAY_ORDER: after decode-floor v5 (whose per-request
-# cap the Mamba alignment relies on), no shared anchors.
-RUN python3 /opt/glm53/patch_mamba_align_chunking.py
+# cap the hash-block split relies on), no shared anchors.
+RUN python3 /opt/glm53/patch_mamba_hash_block_split.py
 RUN GLM53_KV_COORDINATOR_PY_SRC=/usr/local/lib/python3.12/dist-packages/vllm/v1/core/kv_cache_coordinator.py \
     python3 /opt/glm53/test_apc_per_group_retention.py
 RUN python3 /opt/glm53/patch_hybrid_prefix_hit.py
@@ -536,7 +536,7 @@ RUN EXL3_SELFCHECK_GPU=0 python3 /opt/glm53/test_exl3_overlay.py \
     && python3 /opt/glm53/test_suppress_stops.py \
     && python3 /opt/glm53/test_scheduler_decode_floor.py \
     && python3 /opt/glm53/test_scheduler_decode_floor_restart.py \
-    && python3 /opt/glm53/test_mamba_align_chunking.py \
+    && python3 /opt/glm53/test_mamba_hash_block_split.py \
     && python3 /opt/glm53/test_hybrid_prefix_hit.py \
     && python3 /opt/glm53/test_xgrammar_termination.py \
     && python3 /opt/glm53/test_kpool_tail_slotmap.py \

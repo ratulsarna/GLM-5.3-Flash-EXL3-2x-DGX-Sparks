@@ -252,7 +252,7 @@ XGRAMMAR_PATCH_HOST="${XGRAMMAR_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_xgrammar_t
 CACHE_RESET_PATCH_HOST="${CACHE_RESET_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_cache_reset.py}"
 KPOOL_TAIL_PATCH_HOST="${KPOOL_TAIL_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_kpool_tail_slotmap.py}"
 MAMBA_STATE_PATCH_HOST="${MAMBA_STATE_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_mamba_align_state_free.py}"
-MAMBA_CHUNK_PATCH_HOST="${MAMBA_CHUNK_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_mamba_align_chunking.py}"
+MAMBA_SPLIT_PATCH_HOST="${MAMBA_SPLIT_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_mamba_hash_block_split.py}"
 SPINWAIT_PATCH_HOST="${SPINWAIT_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_spinwait.py}"
 ADAPTIVE_K_PATCH_HOST="${ADAPTIVE_K_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_adaptive_k.py}"
 DENSE_FP8_PATCH_HOST="${DENSE_FP8_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_dense_fp8.py}"
@@ -764,7 +764,7 @@ validate_overlay_artifacts() {
         "$XGRAMMAR_PATCH_HOST|vllm/v1/structured_output/|$main_guard"
         "$KPOOL_TAIL_PATCH_HOST|[glm53-kpool-tail-slotmap]|$main_guard"
         "$MAMBA_STATE_PATCH_HOST|[glm53-mamba-align-state-free-v1]|$main_guard"
-        "$MAMBA_CHUNK_PATCH_HOST|[glm53-mamba-align-chunking-v1]|$main_guard"
+        "$MAMBA_SPLIT_PATCH_HOST|[glm53-mamba-hash-block-split-v1]|$main_guard"
         "$SPINWAIT_PATCH_HOST|device_communicators/shm_broadcast.py|$main_guard"
         "$ADAPTIVE_K_PATCH_HOST|[glm53-adaptive-k]|$main_guard"
         "$DENSE_FP8_PATCH_HOST|[glm53-dense-fp8]|$main_guard"
@@ -1159,7 +1159,7 @@ preflight() {
     [ -f "$CACHE_RESET_PATCH_HOST" ] || die "$CACHE_RESET_PATCH_HOST missing"
     [ -f "$KPOOL_TAIL_PATCH_HOST" ] || die "$KPOOL_TAIL_PATCH_HOST missing"
     [ -f "$MAMBA_STATE_PATCH_HOST" ] || die "$MAMBA_STATE_PATCH_HOST missing"
-    [ -f "$MAMBA_CHUNK_PATCH_HOST" ] || die "$MAMBA_CHUNK_PATCH_HOST missing"
+    [ -f "$MAMBA_SPLIT_PATCH_HOST" ] || die "$MAMBA_SPLIT_PATCH_HOST missing"
     [ -f "$SPINWAIT_PATCH_HOST" ] || die "$SPINWAIT_PATCH_HOST missing"
     [ -f "$ADAPTIVE_K_PATCH_HOST" ] || die "$ADAPTIVE_K_PATCH_HOST missing"
     [ -f "$DENSE_FP8_PATCH_HOST" ] || die "$DENSE_FP8_PATCH_HOST missing"
@@ -1653,7 +1653,7 @@ GLM53_OVERLAY_ORDER=(
     patch_glm_video_placeholders.py
     patch_suppress_stops_in_reasoning.py
     patch_scheduler_decode_floor.py
-    patch_mamba_align_chunking.py
+    patch_mamba_hash_block_split.py
     patch_glm5_drafter_group.py
     patch_hybrid_prefix_hit.py
     patch_apc_per_group_retention.py
@@ -1920,8 +1920,8 @@ launch_cluster() {
     scp -q -o BatchMode=yes "$KPOOL_TAIL_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_kpool_tail_slotmap.py"
     [ -f "$MAMBA_STATE_PATCH_HOST" ] || die "missing $MAMBA_STATE_PATCH_HOST"
     scp -q -o BatchMode=yes "$MAMBA_STATE_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_mamba_align_state_free.py"
-    [ -f "$MAMBA_CHUNK_PATCH_HOST" ] || die "missing $MAMBA_CHUNK_PATCH_HOST"
-    scp -q -o BatchMode=yes "$MAMBA_CHUNK_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_mamba_align_chunking.py"
+    [ -f "$MAMBA_SPLIT_PATCH_HOST" ] || die "missing $MAMBA_SPLIT_PATCH_HOST"
+    scp -q -o BatchMode=yes "$MAMBA_SPLIT_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_mamba_hash_block_split.py"
     [ -f "$SPINWAIT_PATCH_HOST" ] || die "missing $SPINWAIT_PATCH_HOST"
     scp -q -o BatchMode=yes "$SPINWAIT_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_spinwait.py"
     [ -f "$ADAPTIVE_K_PATCH_HOST" ] || die "missing $ADAPTIVE_K_PATCH_HOST"
@@ -2129,7 +2129,7 @@ launch_cluster() {
         -v '${WORKER_STAGE}/patch_cache_reset.py:/opt/glm53/patch_cache_reset.py:ro' \
         -v '${WORKER_STAGE}/patch_kpool_tail_slotmap.py:/opt/glm53/patch_kpool_tail_slotmap.py:ro' \
         -v '${WORKER_STAGE}/patch_mamba_align_state_free.py:/opt/glm53/patch_mamba_align_state_free.py:ro' \
-        -v '${WORKER_STAGE}/patch_mamba_align_chunking.py:/opt/glm53/patch_mamba_align_chunking.py:ro' \
+        -v '${WORKER_STAGE}/patch_mamba_hash_block_split.py:/opt/glm53/patch_mamba_hash_block_split.py:ro' \
         -v '${WORKER_STAGE}/patch_spinwait.py:/opt/glm53/patch_spinwait.py:ro' \
         -v '${WORKER_STAGE}/patch_adaptive_k.py:/opt/glm53/patch_adaptive_k.py:ro' \
         -v '${WORKER_STAGE}/patch_dense_fp8.py:/opt/glm53/patch_dense_fp8.py:ro' \
@@ -2178,7 +2178,7 @@ launch_cluster() {
         -v "$CACHE_RESET_PATCH_HOST:/opt/glm53/patch_cache_reset.py:ro" \
         -v "$KPOOL_TAIL_PATCH_HOST:/opt/glm53/patch_kpool_tail_slotmap.py:ro" \
         -v "$MAMBA_STATE_PATCH_HOST:/opt/glm53/patch_mamba_align_state_free.py:ro" \
-        -v "$MAMBA_CHUNK_PATCH_HOST:/opt/glm53/patch_mamba_align_chunking.py:ro" \
+        -v "$MAMBA_SPLIT_PATCH_HOST:/opt/glm53/patch_mamba_hash_block_split.py:ro" \
         -v "$SPINWAIT_PATCH_HOST:/opt/glm53/patch_spinwait.py:ro" \
         -v "$ADAPTIVE_K_PATCH_HOST:/opt/glm53/patch_adaptive_k.py:ro" \
         -v "$DENSE_FP8_PATCH_HOST:/opt/glm53/patch_dense_fp8.py:ro" \
