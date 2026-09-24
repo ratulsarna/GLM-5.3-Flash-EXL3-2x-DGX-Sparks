@@ -76,7 +76,13 @@ cleanup() {
         rm -f "$pid_file"
     fi
     if ((lease_pending == 1)); then
-        if ((stopped == 1)) && lease release; then
+        local release_rc=1
+        if ((stopped == 1)); then
+            lease release && release_rc=0 || release_rc=$?
+        fi
+        # 73 means another owner holds the lease, for example when our claim lost,
+        # so this token can never release it and would only block the next start.
+        if ((release_rc == 0 || release_rc == 73)); then
             rm -f "$token_file"
         else
             log 'Cleanup incomplete; retaining the GPU lease and owner token'
