@@ -17,6 +17,8 @@ if [[ ${GLM53_EXL3_MOE_FAST-} != 1 ]]; then
 fi
 mode=${2:-isolated}
 [[ $mode == isolated || $mode == managed ]] || exit 2
+profile=${3:-stock}
+[[ $profile == stock || $profile == abliterated ]] || exit 2
 pid_file=$task_root/$arm-supervisor.pid
 lease_helper=/home/ratulsarna/Work/spark-serve/scripts/cluster-gpu-lease.sh
 token_file=/run/spark-models/cluster/glm5.3-f-exl3.owner-token
@@ -29,6 +31,12 @@ if [[ $mode == managed ]]; then
     export LOGDIR=/run/spark-models/glm5.3-f-exl3
     export HEAD_SCRIPT=$LOGDIR/head.inner.sh WORKER_SCRIPT=$LOGDIR/worker.inner.sh
     pid_file=$LOGDIR/supervisor.pid
+fi
+if [[ $profile == abliterated ]]; then
+    # Naming the method makes missing ablit/transplant data fail the boot
+    # instead of silently serving the projection edit.
+    export ABLIT=1 ABLIT_METHOD=transplant
+    export SERVED_MODEL_NAME=${SERVED_MODEL_NAME:?}-abliterated
 fi
 worker=ratulsarna@192.168.100.11
 launcher_pid=
