@@ -254,6 +254,7 @@ CACHE_RESET_PATCH_HOST="${CACHE_RESET_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_cach
 KPOOL_TAIL_PATCH_HOST="${KPOOL_TAIL_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_kpool_tail_slotmap.py}"
 MAMBA_STATE_PATCH_HOST="${MAMBA_STATE_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_mamba_align_state_free.py}"
 MAMBA_SPLIT_PATCH_HOST="${MAMBA_SPLIT_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_mamba_hash_block_split.py}"
+PAD_GUARD_PATCH_HOST="${PAD_GUARD_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_scheduler_pad_spec_guard.py}"
 SPINWAIT_PATCH_HOST="${SPINWAIT_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_spinwait.py}"
 ADAPTIVE_K_PATCH_HOST="${ADAPTIVE_K_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_adaptive_k.py}"
 DENSE_FP8_PATCH_HOST="${DENSE_FP8_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_dense_fp8.py}"
@@ -771,6 +772,7 @@ validate_overlay_artifacts() {
         "$KPOOL_TAIL_PATCH_HOST|[glm53-kpool-tail-slotmap]|$main_guard"
         "$MAMBA_STATE_PATCH_HOST|[glm53-mamba-align-state-free-v1]|$main_guard"
         "$MAMBA_SPLIT_PATCH_HOST|[glm53-mamba-hash-block-split-v1]|$main_guard"
+        "$PAD_GUARD_PATCH_HOST|[glm53-pad-spec-guard]|$main_guard"
         "$SPINWAIT_PATCH_HOST|device_communicators/shm_broadcast.py|$main_guard"
         "$ADAPTIVE_K_PATCH_HOST|[glm53-adaptive-k]|$main_guard"
         "$DENSE_FP8_PATCH_HOST|[glm53-dense-fp8]|$main_guard"
@@ -1166,6 +1168,7 @@ preflight() {
     [ -f "$KPOOL_TAIL_PATCH_HOST" ] || die "$KPOOL_TAIL_PATCH_HOST missing"
     [ -f "$MAMBA_STATE_PATCH_HOST" ] || die "$MAMBA_STATE_PATCH_HOST missing"
     [ -f "$MAMBA_SPLIT_PATCH_HOST" ] || die "$MAMBA_SPLIT_PATCH_HOST missing"
+    [ -f "$PAD_GUARD_PATCH_HOST" ] || die "$PAD_GUARD_PATCH_HOST missing"
     [ -f "$SPINWAIT_PATCH_HOST" ] || die "$SPINWAIT_PATCH_HOST missing"
     [ -f "$ADAPTIVE_K_PATCH_HOST" ] || die "$ADAPTIVE_K_PATCH_HOST missing"
     [ -f "$DENSE_FP8_PATCH_HOST" ] || die "$DENSE_FP8_PATCH_HOST missing"
@@ -1661,6 +1664,7 @@ GLM53_OVERLAY_ORDER=(
     patch_suppress_stops_in_reasoning.py
     patch_scheduler_decode_floor.py
     patch_mamba_hash_block_split.py
+    patch_scheduler_pad_spec_guard.py
     patch_glm5_drafter_group.py
     patch_hybrid_prefix_hit.py
     patch_apc_per_group_retention.py
@@ -1931,6 +1935,8 @@ launch_cluster() {
     scp -q -o BatchMode=yes "$MAMBA_STATE_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_mamba_align_state_free.py"
     [ -f "$MAMBA_SPLIT_PATCH_HOST" ] || die "missing $MAMBA_SPLIT_PATCH_HOST"
     scp -q -o BatchMode=yes "$MAMBA_SPLIT_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_mamba_hash_block_split.py"
+    [ -f "$PAD_GUARD_PATCH_HOST" ] || die "missing $PAD_GUARD_PATCH_HOST"
+    scp -q -o BatchMode=yes "$PAD_GUARD_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_scheduler_pad_spec_guard.py"
     [ -f "$SPINWAIT_PATCH_HOST" ] || die "missing $SPINWAIT_PATCH_HOST"
     scp -q -o BatchMode=yes "$SPINWAIT_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_spinwait.py"
     [ -f "$ADAPTIVE_K_PATCH_HOST" ] || die "missing $ADAPTIVE_K_PATCH_HOST"
@@ -2140,6 +2146,7 @@ launch_cluster() {
         -v '${WORKER_STAGE}/patch_kpool_tail_slotmap.py:/opt/glm53/patch_kpool_tail_slotmap.py:ro' \
         -v '${WORKER_STAGE}/patch_mamba_align_state_free.py:/opt/glm53/patch_mamba_align_state_free.py:ro' \
         -v '${WORKER_STAGE}/patch_mamba_hash_block_split.py:/opt/glm53/patch_mamba_hash_block_split.py:ro' \
+        -v '${WORKER_STAGE}/patch_scheduler_pad_spec_guard.py:/opt/glm53/patch_scheduler_pad_spec_guard.py:ro' \
         -v '${WORKER_STAGE}/patch_spinwait.py:/opt/glm53/patch_spinwait.py:ro' \
         -v '${WORKER_STAGE}/patch_adaptive_k.py:/opt/glm53/patch_adaptive_k.py:ro' \
         -v '${WORKER_STAGE}/patch_dense_fp8.py:/opt/glm53/patch_dense_fp8.py:ro' \
@@ -2190,6 +2197,7 @@ launch_cluster() {
         -v "$KPOOL_TAIL_PATCH_HOST:/opt/glm53/patch_kpool_tail_slotmap.py:ro" \
         -v "$MAMBA_STATE_PATCH_HOST:/opt/glm53/patch_mamba_align_state_free.py:ro" \
         -v "$MAMBA_SPLIT_PATCH_HOST:/opt/glm53/patch_mamba_hash_block_split.py:ro" \
+        -v "$PAD_GUARD_PATCH_HOST:/opt/glm53/patch_scheduler_pad_spec_guard.py:ro" \
         -v "$SPINWAIT_PATCH_HOST:/opt/glm53/patch_spinwait.py:ro" \
         -v "$ADAPTIVE_K_PATCH_HOST:/opt/glm53/patch_adaptive_k.py:ro" \
         -v "$DENSE_FP8_PATCH_HOST:/opt/glm53/patch_dense_fp8.py:ro" \
