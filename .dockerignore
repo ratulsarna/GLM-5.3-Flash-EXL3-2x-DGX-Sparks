@@ -3,3 +3,5 @@ logs
 docs
 results
 **/__pycache__
+.env
+.env.*
