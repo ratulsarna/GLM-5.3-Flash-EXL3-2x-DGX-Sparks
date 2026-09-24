@@ -248,6 +248,7 @@ PERGROUP_PATCH_HOST="${PERGROUP_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_apc_per_gr
 NOSTORE_PATCH_HOST="${NOSTORE_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_apc_no_store.py}"
 KVCAP_PATCH_HOST="${KVCAP_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_kv_capacity_log.py}"
 TOOLCHOICE_PATCH_HOST="${TOOLCHOICE_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_tool_choice_none.py}"
+ROUTER_FP32_PATCH_HOST="${ROUTER_FP32_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_router_fp32_sm12x.py}"
 XGRAMMAR_PATCH_HOST="${XGRAMMAR_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_xgrammar_termination.py}"
 CACHE_RESET_PATCH_HOST="${CACHE_RESET_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_cache_reset.py}"
 KPOOL_TAIL_PATCH_HOST="${KPOOL_TAIL_PATCH_HOST:-$SCRIPT_DIR/overlay/patch_kpool_tail_slotmap.py}"
@@ -761,6 +762,7 @@ validate_overlay_artifacts() {
         "$NOSTORE_PATCH_HOST|[glm53-apc-no-store]|$main_guard"
         "$KVCAP_PATCH_HOST|[glm53-kv-capacity-log]|$main_guard"
         "$TOOLCHOICE_PATCH_HOST|[glm53-tool-choice-none]|$main_guard"
+        "$ROUTER_FP32_PATCH_HOST|[glm53-router-fp32-sm12x]|$main_guard"
         "$XGRAMMAR_PATCH_HOST|vllm/v1/structured_output/|$main_guard"
         "$KPOOL_TAIL_PATCH_HOST|[glm53-kpool-tail-slotmap]|$main_guard"
         "$MAMBA_STATE_PATCH_HOST|[glm53-mamba-align-state-free-v1]|$main_guard"
@@ -1648,7 +1650,8 @@ sync_weights() {
 # follows retention (sampling_params / request / block_pool only, no shared
 # anchors with the coordinator overlays). The KV-capacity log edits only
 # kv_cache_utils.py and follows patch_glm5_drafter_group.py, the other overlay
-# editing that file.
+# editing that file. The SM12x fp32 router edits only gate_linear.py, which no
+# other overlay touches.
 GLM53_OVERLAY_ORDER=(
     patch_glm_video_placeholders.py
     patch_suppress_stops_in_reasoning.py
@@ -1662,6 +1665,7 @@ GLM53_OVERLAY_ORDER=(
     patch_mamba_align_state_free.py
     patch_kv_capacity_log.py
     patch_tool_choice_none.py
+    patch_router_fp32_sm12x.py
     patch_xgrammar_termination.py
     patch_kpool_tail_slotmap.py
     patch_spinwait.py
@@ -1898,6 +1902,7 @@ launch_cluster() {
     scp -q -o BatchMode=yes "$STOP_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_suppress_stops_in_reasoning.py"
     [ -f "$TOOLCHOICE_PATCH_HOST" ] || die "missing $TOOLCHOICE_PATCH_HOST"
     scp -q -o BatchMode=yes "$TOOLCHOICE_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_tool_choice_none.py"
+    scp -q -o BatchMode=yes "$ROUTER_FP32_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_router_fp32_sm12x.py"
     [ -f "$SCHED_PATCH_HOST" ] || die "missing $SCHED_PATCH_HOST"
     scp -q -o BatchMode=yes "$SCHED_PATCH_HOST" "${WORKER_SSH}:${WORKER_STAGE}/patch_scheduler_decode_floor.py"
     [ -f "$DRAFTER_PATCH_HOST" ] || die "missing $DRAFTER_PATCH_HOST"
@@ -2119,6 +2124,7 @@ launch_cluster() {
         -v '${WORKER_STAGE}/patch_suppress_stops_in_reasoning.py:/opt/glm53/patch_suppress_stops_in_reasoning.py:ro' \
         -v '${WORKER_STAGE}/patch_scheduler_decode_floor.py:/opt/glm53/patch_scheduler_decode_floor.py:ro' \
         -v '${WORKER_STAGE}/patch_tool_choice_none.py:/opt/glm53/patch_tool_choice_none.py:ro' \
+        -v '${WORKER_STAGE}/patch_router_fp32_sm12x.py:/opt/glm53/patch_router_fp32_sm12x.py:ro' \
         -v '${WORKER_STAGE}/patch_glm5_drafter_group.py:/opt/glm53/patch_glm5_drafter_group.py:ro' \
         -v '${WORKER_STAGE}/patch_hybrid_prefix_hit.py:/opt/glm53/patch_hybrid_prefix_hit.py:ro' \
         -v '${WORKER_STAGE}/patch_apc_per_group_retention.py:/opt/glm53/patch_apc_per_group_retention.py:ro' \
@@ -2168,6 +2174,7 @@ launch_cluster() {
         -v "$STOP_PATCH_HOST:/opt/glm53/patch_suppress_stops_in_reasoning.py:ro" \
         -v "$SCHED_PATCH_HOST:/opt/glm53/patch_scheduler_decode_floor.py:ro" \
         -v "$TOOLCHOICE_PATCH_HOST:/opt/glm53/patch_tool_choice_none.py:ro" \
+        -v "$ROUTER_FP32_PATCH_HOST:/opt/glm53/patch_router_fp32_sm12x.py:ro" \
         -v "$DRAFTER_PATCH_HOST:/opt/glm53/patch_glm5_drafter_group.py:ro" \
         -v "$APC_PATCH_HOST:/opt/glm53/patch_hybrid_prefix_hit.py:ro" \
         -v "$PERGROUP_PATCH_HOST:/opt/glm53/patch_apc_per_group_retention.py:ro" \

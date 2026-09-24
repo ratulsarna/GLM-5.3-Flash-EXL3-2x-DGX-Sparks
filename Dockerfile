@@ -480,6 +480,8 @@ COPY overlay/patch_indexer_workspace.py /opt/glm53/patch_indexer_workspace.py
 COPY tests/test_indexer_workspace.py /opt/glm53/test_indexer_workspace.py
 COPY overlay/patch_tool_choice_none.py /opt/glm53/patch_tool_choice_none.py
 COPY tests/test_tool_choice_none.py /opt/glm53/test_tool_choice_none.py
+COPY overlay/patch_router_fp32_sm12x.py /opt/glm53/patch_router_fp32_sm12x.py
+COPY tests/test_router_fp32_sm12x.py /opt/glm53/test_router_fp32_sm12x.py
 COPY overlay/ablit_runtime.py /opt/glm53/ablit_runtime.py
 COPY overlay/patch_ablit.py /opt/glm53/patch_ablit.py
 COPY tests/test_ablit.py /opt/glm53/test_ablit.py
@@ -530,6 +532,10 @@ RUN python3 /opt/glm53/patch_indexer_workspace.py
 RUN python3 /opt/glm53/patch_spinwait.py --preflight
 RUN python3 /opt/glm53/patch_cache_reset.py
 RUN python3 /opt/glm53/patch_tool_choice_none.py
+# Preflight the real gate_linear.py anchors, then give SM12x the fp32 router
+# product tier 5 already computes on SM90/SM100.
+RUN GLM53_REQUIRE_TARGET=1 python3 /opt/glm53/test_router_fp32_sm12x.py
+RUN python3 /opt/glm53/patch_router_fp32_sm12x.py
 RUN python3 /opt/glm53/patch_ablit.py
 
 RUN EXL3_SELFCHECK_GPU=0 python3 /opt/glm53/test_exl3_overlay.py \
@@ -543,6 +549,7 @@ RUN EXL3_SELFCHECK_GPU=0 python3 /opt/glm53/test_exl3_overlay.py \
     && python3 /opt/glm53/test_spinwait_patch.py \
     && python3 /opt/glm53/test_indexer_workspace.py \
     && python3 /opt/glm53/test_tool_choice_none.py \
+    && python3 /opt/glm53/test_router_fp32_sm12x.py \
     && python3 /opt/glm53/test_ablit.py \
     && python3 /opt/glm53/test_cache_reset_endpoint.py
 
