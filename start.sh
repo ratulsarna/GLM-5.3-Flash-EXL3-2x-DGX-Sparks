@@ -1948,8 +1948,8 @@ launch_cluster() {
     scp -q -o BatchMode=yes "$EXL3_OVERLAY_HOST" "${WORKER_SSH}:${WORKER_STAGE}/glm53-exl3.py"
     _glm53_stage_coop_runtime_worker
 
-    worker_ssh "rm -rf ${WORKER_STAGE}/glm53-ablit"
-    scp -q -r -o BatchMode=yes "$SCRIPT_DIR/ablit" "${WORKER_SSH}:${WORKER_STAGE}/glm53-ablit"
+    # rsync sends only changed files, so ablit/transplant (2.6 GB) is not re-copied every boot.
+    rsync -a --delete -e "ssh -o BatchMode=yes" "$SCRIPT_DIR/ablit/" "${WORKER_SSH}:${WORKER_STAGE}/glm53-ablit/"
     scp -q -o BatchMode=yes "$SCRIPT_DIR/overlay/ablit_runtime.py" "${WORKER_SSH}:${WORKER_STAGE}/glm53-ablit_runtime.py"
     scp -q -o BatchMode=yes "$SCRIPT_DIR/overlay/patch_ablit.py" "${WORKER_SSH}:${WORKER_STAGE}/patch_ablit.py"
 
