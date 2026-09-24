@@ -60,7 +60,10 @@ stop_rank() {
 cleanup() {
     ((cleanup_done == 0)) || return 0
     cleanup_done=1
-    trap - EXIT INT TERM
+    # Finish stopping the ranks and releasing the lease even if llama-swap
+    # sends another SIGTERM while this runs, for example an unload during crash cleanup.
+    trap - EXIT
+    trap '' INT TERM
     local stopped=1 stop_head_pid
     if ((owns_trial == 1)); then
         log 'Stopping the owned GLM ranks'
