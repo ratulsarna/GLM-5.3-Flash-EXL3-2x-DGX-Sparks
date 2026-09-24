@@ -96,6 +96,8 @@ flock -n "$trial_lock_fd" || fail 'Another isolated supervisor owns this GPU pai
 mkdir -p "$LOGDIR"
 empty_running='import json,sys; d=json.load(sys.stdin); assert not (d if isinstance(d,list) else d["running"]), "Production is busy"'
 if [[ $mode == managed ]]; then
+    # /run is cleared on reboot; the lease helper creates this directory the same way.
+    install -d -m 0700 /run/spark-models/cluster
     exec {managed_lock_fd}>/run/spark-models/cluster/glm5.3-f-exl3.wrapper.lock
     flock -n "$managed_lock_fd" || fail 'Another managed GLM supervisor is running'
     [[ ! -e $token_file ]] || fail 'A previous GPU lease needs cleanup'
