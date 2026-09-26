@@ -2404,6 +2404,14 @@ on_ready() {
 }
 
 # ------------------------------- start -------------------------------------
+# InstantTensor sizes its load buffer from CUDA free memory, which on GB10 does
+# not count page cache, so a large file cache on either node fails the weight load.
+drop_page_caches() {
+    local cmd="docker run --rm --privileged --pid host --network none --entrypoint /bin/sh '$IMAGE' -c 'sync; echo 3 > /proc/sys/vm/drop_caches'"
+    bash -c "$cmd" || warn "could not drop the page cache on head"
+    worker_ssh "$cmd" || warn "could not drop the page cache on worker"
+}
+
 start_unlocked() {
     preflight
     ensure_image
@@ -2423,6 +2431,7 @@ start_unlocked() {
     log "exl3: fat_kernel=${EXL3_FAT_KERNEL} fat_grouped=${EXL3_FAT_GROUPED} temp_rows_fused=${EXL3_TEMP_ROWS_FUSED} mnbt=${MAX_NUM_BATCHED_TOKENS} max_num_seqs=${MAX_NUM_SEQS} draft_tp=${DFLASH_DRAFT_TP}"
     log "mixed-prefill: policy=${GLM53_MIXED_PREFILL_CHUNK} fair_chunk=${GLM53_FAIR_PREFILL_CHUNK} share=${GLM53_FAIR_PREFILL_SHARE} interval_ms=${GLM53_FAIR_PREFILL_MAX_INTERVAL_MS} max_step_ms=${GLM53_FAIR_PREFILL_MAX_STEP_MS} max_chunks=${GLM53_FAIR_PREFILL_MAX_CHUNKS} long_prefill=${LONG_PREFILL_TOKEN_THRESHOLD:-}"
 
+    drop_page_caches
     launch_cluster
     if wait_for_health; then
         post_ready_warmup
